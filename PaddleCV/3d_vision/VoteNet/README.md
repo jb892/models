@@ -16,11 +16,10 @@
 ## TODOs
 
 - [ ] VoteNet backbone改写paddle（2天）
-  - [ ] PointNet Backbone module
-  - [ ] Voting module
+  - [x] PointNet Backbone module
+  - [x] Voting module
   - [ ] Proposal module
   - [ ] VoteNet
-  - [ ] BoxNet
 - [ ] ScanNet数据集处理代码改写paddle（1天）
   - [ ] 原始数据集预处理script
   - [ ] ScanNet reader script

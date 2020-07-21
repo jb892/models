@@ -25,7 +25,7 @@ import paddle.fluid as fluid
 from paddle.fluid.param_attr import ParamAttr
 from paddle.fluid.initializer import Constant, Normal
 from ext_op import *
-from typing import List
+from utils import conv1d
 
 __all__ = ["PointnetSAModuleVotes", "PointnetFPModule"]
 
@@ -145,11 +145,11 @@ def MLP(features, out_channels_list, bn=True, bn_momentum=0.95, act='relu', name
     return out
 
 
-def PointnetSAModuleVotes(xyz, features = None, inds = None, mlp=[], npoint = None,
+def PointnetSAModuleVotes(xyz, features = None, inds = None, mlps=None, npoint = None,
                           radius = None, nsample = None, bn = True, use_xyz = True,
                           pooling = 'max', sigma = None,  # for RBF pooling
                           normalize_xyz = False,  # noramlize local XYZ with radius
-                          sample_uniformly = False, ret_unique_cnt = False):
+                          sample_uniformly = False, ret_unique_cnt = False, bn_m=0.95, name=None):
     """
     PointNet MSG(Multi-Scale Group) Set Abstraction Module.
     Call with radiuss, nsamples, mlps as single element list for
@@ -159,21 +159,27 @@ def PointnetSAModuleVotes(xyz, features = None, inds = None, mlp=[], npoint = No
         xyz (Variable): xyz coordiantes features with shape [B, N, 3]
         radius (float32): radius of ball
         nsample (int32): maximum number of gather features
-        mlps ([int32]): out_channels_list
+        mlp ([int32]): out_channels_list
         feature (Variable): features with shape [B, C, N]
         bn (bool): whether perform batch norm after conv2d
-    bn_momentum (float): momentum of batch norm
         use_xyz (bool): whether use xyz coordiantes features
+	    bn_momentum (float): momentum of batch norm
+	    pooling (string): pooling strategy
+	    sigma (float): sigma for RBF pooling
+	    normalize_xyz (bool): normalized local XYZ with radius
+	    sample_uniformly (bool): whether sample uniformly
+        ret_unique_cnt (bool):
 
     Returns:
         new_xyz (Variable): centriods features with shape [B, npoint, 3]
-        out (Variable): features with shape [B, npoint, \sum_i{mlps[i][-1]}]
+        new_features (Variable): features with shape [B, npoint, \sum_i{mlps[i][-1]}]
+        inds (Variable):
+        unique_cnt(optional Variable):
     """
-    # assert len(radiuss) == len(nsamples) == len(mlps), \
-    #         "radiuss, nsamples, mlps length should be same"
     if sigma is None:
         sigma = radius/2
 
+    # sample and grouping
     if npoint is not None:
         grouper = query_and_group(xyz, features, radius, nsample, use_xyz=use_xyz, ret_grouped_xyz=True,
                                   normalize_xyz=normalize_xyz, sample_uniformly=sample_uniformly,
@@ -181,9 +187,10 @@ def PointnetSAModuleVotes(xyz, features = None, inds = None, mlp=[], npoint = No
     else:
         grouper = group_all(xyz, features, use_xyz=use_xyz, ret_grouped_xyz=True)
 
-    # mlp_spec = mlp
-    # if use_xyz and len(mlp_spec) > 0:
-        # mlp_spec[0] += 3
+    mlp_spec = mlps
+    if use_xyz and len(mlp_spec) > 0:
+        mlp_spec[0] += 3
+
     # mlp_module = MLP(mlp_spec, bn=bn)
 
     xyz_flipped = fluid.layers.transpose(xyz, perm=[0, 2, 1])
@@ -200,28 +207,233 @@ def PointnetSAModuleVotes(xyz, features = None, inds = None, mlp=[], npoint = No
         # (B, C, npoint, nsample),(B, 3, npoint, nsample),(B,npoint)
         grouped_features, grouped_xyz, unique_cnt = grouper(xyz, new_xyz, features)
 
+    # MLP
+    for i, num_out_channel in enumerate(mlps):
+        grouped_features = MLP(grouped_features, out_channels_list=num_out_channel, bn=bn, bn_momentum=bn_m, name=name+'_mlp{}'.format(i))
+    new_features = grouped_features # (B, mlp[-1], npoint, nsample)
+
+    # Pooling
+    if pooling == 'max':
+        new_features_shape = fluid.layers.shape(new_features)
+        new_features = fluid.layers.pool2d(new_features, pool_size=[1, new_features_shape[3]], pool_type='max')
+    elif pooling == 'avg':
+        new_features_shape = fluid.layers.shape(new_features)
+        new_features = fluid.layers.pool2d(new_features, pool_size=[1, new_features_shape[3]], pool_type='avg')
+    elif pooling == 'rbf':
+        # Use radial basis function kernel for weighted sum of features (normalized by nsample and sigma)
+        # Ref: https://en.wikipedia.org/wiki/Radial_basis_function_kernel
+        g_xyz_pow = fluid.layers.pow(grouped_xyz, factor=2)
+        g_xyz_pow_sum = fluid.layers.reduce_sum(g_xyz_pow, dim=1, keep_dim=False)
+
+        # (B, npoint, nsample)
+        rbf = fluid.layers.exp(-1 * g_xyz_pow_sum / (sigma**2) / 2)
+
+        # (B, mlp[-1], npoint, 1)
+        new_features = fluid.layers.reduce_sum(new_features * fluid.layers.unsqueeze(rbf, [1]), dim=-1, keep_dim=True) / float(nsample)
+
+    new_features = fluid.layers.unsqueeze(new_features, [1])
+
+    if not ret_unique_cnt:
+        return new_xyz, new_features, inds
+    else:
+        return new_xyz, new_features, inds, unique_cnt
 
 
-    # farthest_idx = farthest_point_sampling(xyz, npoint)
-    # farthest_idx.stop_gradient = True
-    # new_xyz = gather_point(xyz, farthest_idx) if npoint is not None else None
-    #
-    # outs = []
-    # for i, (radius, nsample, mlp) in enumerate(zip(radiuss, nsamples, mlps)):
-    #     out = query_and_group(xyz, new_xyz, radius, nsample, feature, use_xyz) if npoint is not None else group_all(xyz, feature, use_xyz)
-    #     out = MLP(out, mlp, bn=bn, bn_momentum=bn_momentum, name=name + '_mlp{}'.format(i))
-    #     out = fluid.layers.pool2d(out, pool_size=[1, out.shape[3]], pool_type='max')
-    #     out = fluid.layers.squeeze(out, axes=[-1])
-    #     outs.append(out)
-    # out = fluid.layers.concat(outs, axis=1)
+def PointnetFPModule(unknown, known, unknown_feats, known_feats, mlps=None, bn=True, bn_m=0.95, name=None):
+    """
+    :param unknown: (B, n, 3) tensor of the xyz positions of the unknown features
+    :param known: (B, m, 3) tensor of the xyz positions of the known features
+    :param unknown_feats: (B, C1, n) tensor of the features to be propigated to
+    :param known_feats: (B, C2, m) tensor of features to be propigated
+    :param mlps: Pointnet module parameters
+    :param bn: Use batchnorm
+    :return new_features: (B, mlps[-1], n) tensor of the features of the unknown features
+    """
+    if known is not None:
+        dist, idx = three_nn(unknown, known)
+        dist_recip = 1.0 / (dist + 1e-8)
+        norm = fluid.layers.reduce_sum(dist_recip, dim=2, keep_dim=True)
+        weight = dist_recip / norm
 
-    # return (new_xyz, out)
-    pass
+        interpolated_feats = three_interp(input=known_feats, weight=weight, idx=idx)
+    else:
+        interpolated_feats = fluid.layers.expand(*known_feats.shape()[0:2], unknown.shape()[1])
+
+    if unknown_feats is not None:
+        new_features = fluid.layers.concat([interpolated_feats, unknown_feats], axis=1)
+    else:
+        new_features = interpolated_feats
+
+    new_features = fluid.layers.unsqueeze(new_features, axes=-1)
+    for i, num_out_channel in enumerate(mlps):
+        new_features = MLP(new_features, out_channels_list=num_out_channel, bn=bn, bn_momentum=bn_m,
+                           name=name+'_mlp{}'.format(i))
+
+    return fluid.layers.squeeze(new_features, axes=-1)
+
+class Pointnet2Backbone(object):
+    def __init__(self,  input_feature_dim=0):
+        self.input_feature_dim = input_feature_dim
+
+    def build(self, xyz, feature=None, use_xyz=True,):
+        featuresi = fluid.layers.transpose(feature, perm=[0, 2, 1])
+
+        # --------- 4 SET ABSTRACTION LAYERS ---------
+        l1_xyz, l1_feature, l1_inds = PointnetSAModuleVotes(
+            xyz=xyz,
+            features=featuresi,
+            npoint=2048,
+            radius=0.2,
+            nsample=64,
+            mlps=[self.input_feature_dim, 64, 64, 128],
+            use_xyz=use_xyz,
+            normalize_xyz=True,
+            name='layer1'
+        )
+
+        l2_xyz, l2_feature, l2_inds = PointnetSAModuleVotes(
+            xyz=l1_xyz,
+            features=l1_feature,
+            npoint=1024,
+            radius=0.4,
+            nsample=32,
+            mlps=[128, 128, 128, 256],
+            use_xyz=use_xyz,
+            normalize_xyz=True,
+            name='layer2'
+        )
+
+        l3_xyz, l3_feature, l3_inds = PointnetSAModuleVotes(
+            xyz=l2_xyz,
+            features=l2_feature,
+            npoint=512,
+            radius=0.8,
+            nsample=16,
+            mlps=[256, 128, 128, 256],
+            use_xyz=use_xyz,
+            normalize_xyz=True,
+            name='layer3'
+        )
+
+        l4_xyz, l4_feature, l4_inds = PointnetSAModuleVotes(
+            xyz=l3_xyz,
+            features=l3_feature,
+            npoint=256,
+            radius=1.2,
+            nsample=16,
+            mlps=[256, 128, 128, 256],
+            use_xyz=use_xyz,
+            normalize_xyz=True,
+            name='layer4'
+        )
+
+        # --------- 2 FEATURE UPSAMPLING LAYERS --------
+        l3_feature = PointnetFPModule(l3_xyz, l4_xyz, l3_feature, l4_feature, mlps=[256+256, 256, 256], name='fa_layer1')
+        fp2_feature = PointnetFPModule(l2_xyz, l3_xyz, l2_feature, l3_feature, mlps=[256+256, 256, 256], name='fa_layer2')
+
+        num_of_seeds = l2_xyz.shape()[1]
+        fp2_inds = l1_inds[:, 0:num_of_seeds] # indices among the entire input point clouds
+        return l2_xyz, fp2_feature, fp2_inds
+
+class VotingModule(object):
+    def __init__(self, vote_factor, seed_feature_dim):
+        """ Votes generation from seed point features.
+
+        Args:
+            vote_facotr: int
+                number of votes generated from each seed point
+            seed_feature_dim: int
+                number of channels of seed point features
+            vote_feature_dim: int
+                number of channels of vote features
+        """
+        self.vote_factor = vote_factor
+        self.in_dim = seed_feature_dim
+        self.out_dim = self.in_dim # due to residual feature, in_dim has to be == out_dim
+
+    def build(self, seed_xyz, seed_features):
+        """
+        Arguments:
+            seed_xyz: (batch_size, num_seed, 3) Pytorch tensor
+            seed_features: (batch_size, feature_dim, num_seed) Pytorch tensor
+        Returns:
+            vote_xyz: (batch_size, num_seed*vote_factor, 3)
+            vote_features: (batch_size, vote_feature_dim, num_seed*vote_factor)
+        """
+        batch_size = seed_xyz.shape()[0]
+        num_seed = seed_xyz.shape()[1]
+        num_vote = num_seed * self.vote_factor
+
+        net = conv1d(seed_features, self.out_dim, filter_size=1)
+        net = conv1d(net, self.out_dim, filter_size=1)
+        net = conv1d(net,
+                     num_filters=(3+self.out_dim)*self.vote_factor,
+                     filter_size=1,
+                     bn=False,
+                     act=None) # (batch_size, (3+out_dim)*vote_factor, num_seed)
+
+        net = fluid.layers.transpose(net, perm=[0, 2, 1])
+        net = fluid.layers.reshape(net, shape=[batch_size, num_seed, self.vote_factor, 3+self.out_dim])
+        offset = net[:, :, :, 0:3]
+        vote_xyz = fluid.layers.unsqueeze(seed_xyz, 2) + offset
+        vote_xyz = fluid.layers.reshape(vote_xyz, shape=[batch_size, num_vote, 3])
+
+        residual_features = net[:, :, :, 3:] # (batch_size, num_seed, vote_factor, out_dim)
+        vote_features = fluid.layers.unsqueeze(fluid.layers.transpose(seed_features, perm=[0, 2, 1]), 2) + residual_features
+        vote_features = fluid.layers.reshape(vote_features, shape=[batch_size, num_vote, self.out_dim])
+        vote_features = fluid.layers.transpose(vote_features, perm=[0, 2, 1])
+
+        return vote_xyz, vote_features
+
+class VoteNet(object):
+    r"""
+        A deep neural network for 3D object detection with end-to-end optimizable hough voting.
+
+        Parameters
+        ----------
+        num_class: int
+            Number of semantics classes to predict over -- size of softmax classifier
+        num_heading_bin: int
+        num_size_cluster: int
+        input_feature_dim: (default: 0)
+            Input dim in the feature descriptor for each point.  If the point cloud is Nx9, this
+            value should be 6 as in an Nx9 point cloud, 3 of the channels are xyz, and 6 are feature descriptors
+        num_proposal: int (default: 128)
+            Number of proposals/detections generated from the network. Each proposal is a 3D OBB with a semantic class.
+        vote_factor: (default: 1)
+            Number of votes generated from each seed point.
+    """
+    def __init__(self, num_class, num_heading_bin, num_size_cluster, mean_size_arr,
+                 input_feature_dim=0, num_proposal=128, vote_factor=1, sampling='vote_fps'):
+        self.num_class = num_class
+        self.num_heading_bin = num_heading_bin
+        self.num_size_cluster = num_size_cluster
+        self.mean_size_arr = mean_size_arr
+        assert(mean_size_arr.shape[0] == self.num_size_cluster)
+        self.input_feature_dim = input_feature_dim
+        self.num_proposal = num_proposal
+        self.vote_factor = vote_factor
+        self.sampling = sampling
+
+        self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim)
+
+        self.vgen = VoteNet(self.vote_factor, 256)
 
 
-class PointnetFPModule(object):
-    def __init__(self):
+    def build(self, input_xyz, input_feature=None):
+        # Backbone point feature learning
+        seed_xyz, seed_features, seed_inds = self.backbone_net(input_xyz, input_feature)
+
+        # Hough voting
+        vote_xyz, vote_features = self.vgen(seed_xyz, seed_features)
+
+        # TODO: finish next matrix normalization and pnet part.
+        # features_norm =
+
+        # Vote aggregation and detection
+
         pass
+
 
 if __name__=='__main__':
     # test pointnet2 functions
