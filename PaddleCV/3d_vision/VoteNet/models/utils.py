@@ -104,3 +104,18 @@ def conv1d(input,
     # Convert the output tensor from dim 4 back to dim 3
     out_3dim = fluid.layers.squeeze(out_4dim, -1)
     return out_3dim
+
+
+def test():
+    # Test goes here
+    data = fluid.data(name='data', shape=[8, 128], dtype='float32')
+    label = fluid.data(name='label', shape=[8, 1], dtype='int64')
+    fc = fluid.layers.fc(input=data, size=100)
+    out = fluid.layers.softmax_with_cross_entropy(
+        logits=fc, label=label)
+    print(out.shape)
+
+
+if __name__=='__main__':
+    # TODO: test pointnet2 functions
+    test()

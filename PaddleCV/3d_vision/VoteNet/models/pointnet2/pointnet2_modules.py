@@ -385,6 +385,111 @@ class VotingModule(object):
 
         return vote_xyz, vote_features
 
+class ProposalModule(object):
+    def __init__(self, num_class, num_heading_bin, num_size_cluster, mean_size_arr, num_proposal, sampling, seed_feat_dim=256):
+        self.num_class = num_class
+        self.num_heading_bin = num_heading_bin
+        self.num_size_cluster = num_size_cluster
+        self.mean_size_arr = mean_size_arr
+        self.num_proposal = num_proposal
+        self.sampling = sampling
+        self.seed_feat_dim = seed_feat_dim
+
+    def build(self, xyz, features, end_points):
+        if self.sampling == 'vote_fps':
+            # Farthest point sampling (FPS) on votes
+            xyz, features, fps_inds = PointnetSAModuleVotes(
+                xyz=xyz,
+                features=features,
+                npoint=self.num_proposal,
+                radius=0.3,
+                nsample=16,
+                mlps=[self.seed_feat_dim, 128, 128, 128],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+            sample_inds = fps_inds
+        elif self.sampling == 'seed_fps':
+            # FPS on seed and choose the votes corresponding to the seeds
+            # This gets us a slightly better coverage of *object* votes than vote_fps (which tends to get more cluster votes)
+            sample_inds = farthest_point_sampling(end_points['seed_xyz'], self.num_proposal)
+            xyz, features, _ = PointnetSAModuleVotes(
+                xyz=xyz,
+                features=features,
+                inds=sample_inds,
+                npoint=self.num_proposal,
+                radius=0.3,
+                nsample=16,
+                mlps=[self.seed_feat_dim, 128, 128, 128],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+        elif self.sampling == 'random':
+            # Random sampling from the votes
+            num_seed = end_points['seed_xyz'].shape()[1]
+            batch_size = end_points['seed_xyz'].shape()[0]
+            sample_inds = fluid.layers.randint(0, num_seed, shape=(batch_size, self.num_proposal), dtype='int32')
+            xyz, features, _ = PointnetSAModuleVotes(
+                xyz=xyz,
+                features=features,
+                inds=sample_inds,
+                npoint=self.num_proposal,
+                radius=0.3,
+                nsample=16,
+                mlps=[self.seed_feat_dim, 128, 128, 128],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+        else:
+            print('Unknown sampling strategy: %s. Exiting!'%(self.sampling))
+            exit()
+        end_points['aggregated_vote_xyz'] = xyz # (batch_size, num_proposal, 3)
+        end_points['aggregated_vote_inds'] = sample_inds # (batch_size, num_proposal,) # should be 0,1,2,...,num_proposal
+
+        # --------- PROPOSAL GENERATION ---------
+        net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu')
+        net = conv1d(input=net, num_filters=128, filter_size=1, bn=True, act='relu')
+        net = conv1d(input=net, num_filters=2+3+self.num_heading_bin*2+self.num_size_cluster*4+self.num_class,
+                     filter_size=1, bn=False, act=None)
+
+        end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
+                                   self.mean_size_arr)
+        return end_points
+
+def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster, mean_size_arr):
+    net_transposed = net.transpose(2, 1)  # (batch_size, 1024, ..)
+    batch_size = net_transposed.shape()[0]
+    num_proposal = net_transposed.shape()[1]
+
+    objectness_scores = net_transposed[:, :, 0:2]
+    end_points['objectness_scores'] = objectness_scores
+
+    base_xyz = end_points['aggregated_vote_xyz']  # (batch_size, num_proposal, 3)
+    center = base_xyz + net_transposed[:, :, 2:5]  # (batch_size, num_proposal, 3)
+    end_points['center'] = center
+
+    heading_scores = net_transposed[:, :, 5:5 + num_heading_bin]
+    heading_residuals_normalized = net_transposed[:, :, 5 + num_heading_bin:5 + num_heading_bin * 2]
+    end_points['heading_scores'] = heading_scores  # Bxnum_proposalxnum_heading_bin
+    end_points[
+        'heading_residuals_normalized'] = heading_residuals_normalized  # Bxnum_proposalxnum_heading_bin (should be -1 to 1)
+    end_points['heading_residuals'] = heading_residuals_normalized * (
+                np.pi / num_heading_bin)  # Bxnum_proposalxnum_heading_bin
+
+    size_scores = net_transposed[:, :, 5 + num_heading_bin * 2:5 + num_heading_bin * 2 + num_size_cluster]
+    size_residuals_normalized = net_transposed[:, :,
+                                5 + num_heading_bin * 2 + num_size_cluster:5 + num_heading_bin * 2 + num_size_cluster * 4].view(
+        [batch_size, num_proposal, num_size_cluster, 3])  # Bxnum_proposalxnum_size_clusterx3
+    end_points['size_scores'] = size_scores
+    end_points['size_residuals_normalized'] = size_residuals_normalized
+    end_points['size_residuals'] = size_residuals_normalized * fluid.create_lod_tensor(
+        mean_size_arr.astype(np.float32), place=fluid.CUDAPlace).unsqueeze(0).unsqueeze(0)
+
+    sem_cls_scores = net_transposed[:, :, 5 + num_heading_bin * 2 + num_size_cluster * 4:]  # Bxnum_proposalx10
+    end_points['sem_cls_scores'] = sem_cls_scores
+    return end_points
+
+
 class VoteNet(object):
     r"""
         A deep neural network for 3D object detection with end-to-end optimizable hough voting.
@@ -419,23 +524,49 @@ class VoteNet(object):
 
         self.vgen = VoteNet(self.vote_factor, 256)
 
+        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, mean_size_arr, num_proposal, sampling)
+
+    def build_input(self):
+        self.xyz = fluid.data(name='xyz',
+                              shape=[None, self.num_points, 3],
+                              dtype='float32',
+                              lod_level=0)
+        self.feature = fluid.data(name='feature',
+                                  shape=[None, self.num_points, self.input_feature_dim],
+                                  dtype='float32',
+                                  lod_level=0)
+        self.label = fluid.data(name='label',
+                                shape=[None, self.num_points, 1],
+                                dtype='int64',
+                                lod_level=0)
+        self.loader = fluid.io.DataLoader.from_generator(
+            feed_list=[self.xyz, self.feature, self.label],
+            capacity=64,
+            use_double_buffer=True,
+            iterable=False)
+        self.feed_vars = [self.xyz, self.feature, self.label]
+
 
     def build(self, input_xyz, input_feature=None):
+        end_points = {}
+
         # Backbone point feature learning
         seed_xyz, seed_features, seed_inds = self.backbone_net(input_xyz, input_feature)
+
+        end_points['seed_xyz'] = seed_xyz
+        end_points['seed_features'] = seed_features
+        end_points['seed_inds'] = seed_inds
 
         # Hough voting
         vote_xyz, vote_features = self.vgen(seed_xyz, seed_features)
 
-        # TODO: finish next matrix normalization and pnet part.
-        # features_norm =
+        features_norm = fluid.layers.reduce_sum(fluid.layers.abs(vote_features), dim=1, keep_dim=True)
+        vote_features = vote_features / features_norm
+
+        end_points['vote_xyz'] = vote_xyz
+        end_points['vote_features'] = vote_features
 
         # Vote aggregation and detection
+        output = self.pnet(vote_xyz, vote_features)
 
-        pass
-
-
-if __name__=='__main__':
-    # test pointnet2 functions
-
-    pass
+        return output
