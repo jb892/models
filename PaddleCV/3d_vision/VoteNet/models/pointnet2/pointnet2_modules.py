@@ -214,10 +214,10 @@ def PointnetSAModuleVotes(xyz, features = None, inds = None, mlps=None, npoint =
 
     # Pooling
     if pooling == 'max':
-        new_features_shape = fluid.layers.shape(new_features)
+        new_features_shape = new_features.shape
         new_features = fluid.layers.pool2d(new_features, pool_size=[1, new_features_shape[3]], pool_type='max')
     elif pooling == 'avg':
-        new_features_shape = fluid.layers.shape(new_features)
+        new_features_shape = new_features.shape
         new_features = fluid.layers.pool2d(new_features, pool_size=[1, new_features_shape[3]], pool_type='avg')
     elif pooling == 'rbf':
         # Use radial basis function kernel for weighted sum of features (normalized by nsample and sigma)
@@ -257,7 +257,7 @@ def PointnetFPModule(unknown, known, unknown_feats, known_feats, mlps=None, bn=T
 
         interpolated_feats = three_interp(input=known_feats, weight=weight, idx=idx)
     else:
-        interpolated_feats = fluid.layers.expand(*known_feats.shape()[0:2], unknown.shape()[1])
+        interpolated_feats = fluid.layers.expand(*known_feats.shape[0:2], unknown.shape[1])
 
     if unknown_feats is not None:
         new_features = fluid.layers.concat([interpolated_feats, unknown_feats], axis=1)
@@ -331,7 +331,7 @@ class Pointnet2Backbone(object):
         l3_feature = PointnetFPModule(l3_xyz, l4_xyz, l3_feature, l4_feature, mlps=[256+256, 256, 256], name='fa_layer1')
         fp2_feature = PointnetFPModule(l2_xyz, l3_xyz, l2_feature, l3_feature, mlps=[256+256, 256, 256], name='fa_layer2')
 
-        num_of_seeds = l2_xyz.shape()[1]
+        num_of_seeds = l2_xyz.shape[1]
         fp2_inds = l1_inds[:, 0:num_of_seeds] # indices among the entire input point clouds
         return l2_xyz, fp2_feature, fp2_inds
 
@@ -360,8 +360,8 @@ class VotingModule(object):
             vote_xyz: (batch_size, num_seed*vote_factor, 3)
             vote_features: (batch_size, vote_feature_dim, num_seed*vote_factor)
         """
-        batch_size = seed_xyz.shape()[0]
-        num_seed = seed_xyz.shape()[1]
+        batch_size = seed_xyz.shape[0]
+        num_seed = seed_xyz.shape[1]
         num_vote = num_seed * self.vote_factor
 
         net = conv1d(seed_features, self.out_dim, filter_size=1)
@@ -426,8 +426,8 @@ class ProposalModule(object):
             )
         elif self.sampling == 'random':
             # Random sampling from the votes
-            num_seed = end_points['seed_xyz'].shape()[1]
-            batch_size = end_points['seed_xyz'].shape()[0]
+            num_seed = end_points['seed_xyz'].shape[1]
+            batch_size = end_points['seed_xyz'].shape[0]
             sample_inds = fluid.layers.randint(0, num_seed, shape=(batch_size, self.num_proposal), dtype='int32')
             xyz, features, _ = PointnetSAModuleVotes(
                 xyz=xyz,
@@ -458,8 +458,8 @@ class ProposalModule(object):
 
 def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster, mean_size_arr):
     net_transposed = net.transpose(2, 1)  # (batch_size, 1024, ..)
-    batch_size = net_transposed.shape()[0]
-    num_proposal = net_transposed.shape()[1]
+    batch_size = net_transposed.shape[0]
+    num_proposal = net_transposed.shape[1]
 
     objectness_scores = net_transposed[:, :, 0:2]
     end_points['objectness_scores'] = objectness_scores

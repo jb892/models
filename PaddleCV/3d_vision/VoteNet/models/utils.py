@@ -20,6 +20,7 @@ from __future__ import division
 from __future__ import print_function
 
 import paddle.fluid as fluid
+import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
 
 def conv1d(input,
@@ -110,12 +111,50 @@ def test():
     # Test goes here
     data = fluid.data(name='data', shape=[8, 128], dtype='float32')
     label = fluid.data(name='label', shape=[8, 1], dtype='int64')
+
+    new_data = fluid.layers.reshape(x=data, shape=[2, 4, 128])
+    sh = new_data.shape[:2]
+    nn_data = new_data[:, :, :3]
+    int_32_label = fluid.layers.cast(label, dtype='int32')
+
+
+    import numpy as np
+    val = np.random.rand(2, 3)
+    # t = fluid.Tensor()
+    # t.set(val, fluid.CUDAPlace(0))
+    t = fluid.data(name='t', shape=[2, 3], )
+
+    t = fluid.layers.transpose(t, perm=[0, 2, 1])
+
     fc = fluid.layers.fc(input=data, size=100)
-    out = fluid.layers.softmax_with_cross_entropy(
-        logits=fc, label=label)
+    out = fluid.layers.softmax_with_cross_entropy(logits=fc, label=label)
+
     print(out.shape)
+
+def test_paddle_ops():
+    a = fluid.data(name="a", shape=[None, 1], dtype='int64')
+    b = fluid.data(name="b", shape=[None, 1], dtype='int64')
+
+    result = fluid.layers.elementwise_add(a, b)
+
+    cpu = fluid.CPUPlace()
+    exe = fluid.Executor(cpu)
+    exe.run(fluid.default_startup_program())
+
+    import numpy
+    data_1 = int(input("Please enter an integer: a="))
+    data_2 = int(input("Please enter an integer: b="))
+    x = numpy.array([[data_1]])
+    y = numpy.array([[data_2]])
+
+    outs = exe.run(
+        feed={'a': x, 'b': y},
+        fetch_list=[result]
+    )
+
+    print("%d+%d=%d" % (data_1, data_2, outs[0][0]))
 
 
 if __name__=='__main__':
     # TODO: test pointnet2 functions
-    test()
+    test_paddle_ops()

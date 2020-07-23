@@ -30,9 +30,9 @@ from ext_op import *
 __all__ = ['ProposalModule']
 
 def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster, mean_size_arr):
-    net_transposed = net.transpose(2, 1)  # (batch_size, 1024, ..)
-    batch_size = net_transposed.shape()[0]
-    num_proposal = net_transposed.shape()[1]
+    net_transposed = fluid.layers.transpose(net, perm=[0, 2, 1])  # (batch_size, 1024, ..)
+    batch_size = net_transposed.shape[0]
+    num_proposal = net_transposed.shape[1]
 
     objectness_scores = net_transposed[:, :, 0:2]
     end_points['objectness_scores'] = objectness_scores
@@ -43,20 +43,24 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
 
     heading_scores = net_transposed[:, :, 5:5 + num_heading_bin]
     heading_residuals_normalized = net_transposed[:, :, 5 + num_heading_bin:5 + num_heading_bin * 2]
-    end_points['heading_scores'] = heading_scores  # Bxnum_proposalxnum_heading_bin
-    end_points[
-        'heading_residuals_normalized'] = heading_residuals_normalized  # Bxnum_proposalxnum_heading_bin (should be -1 to 1)
-    end_points['heading_residuals'] = heading_residuals_normalized * (
-                np.pi / num_heading_bin)  # Bxnum_proposalxnum_heading_bin
+    end_points['heading_scores'] = heading_scores # Bxnum_proposalxnum_heading_bin
+    end_points['heading_residuals_normalized'] = heading_residuals_normalized # Bxnum_proposalxnum_heading_bin (should be -1 to 1)
+    end_points['heading_residuals'] = heading_residuals_normalized * (np.pi / num_heading_bin) # Bxnum_proposalxnum_heading_bin
 
     size_scores = net_transposed[:, :, 5 + num_heading_bin * 2:5 + num_heading_bin * 2 + num_size_cluster]
     size_residuals_normalized = net_transposed[:, :,
-                                5 + num_heading_bin * 2 + num_size_cluster:5 + num_heading_bin * 2 + num_size_cluster * 4].view(
-        [batch_size, num_proposal, num_size_cluster, 3])  # Bxnum_proposalxnum_size_clusterx3
+                                5 + num_heading_bin * 2 + num_size_cluster:5 + num_heading_bin * 2 + num_size_cluster * 4]
+
+    size_residuals_normalized = fluid.layers.reshape(size_residuals_normalized, shape=[batch_size, num_proposal, num_size_cluster, 3]) # Bxnum_proposalxnum_size_clusterx3
+
     end_points['size_scores'] = size_scores
     end_points['size_residuals_normalized'] = size_residuals_normalized
-    end_points['size_residuals'] = size_residuals_normalized * fluid.create_lod_tensor(
-        mean_size_arr.astype(np.float32), place=fluid.CUDAPlace).unsqueeze(0).unsqueeze(0)
+
+    mean_size_arr_t = fluid.Tensor()
+    mean_size_arr_t.set(mean_size_arr.astype(np.float32), fluid.CUDAPlace(0))
+    mean_size_arr_t = fluid.layers.unsqueeze(fluid.layers.unsqueeze(mean_size_arr_t, axes=0), axes=0)
+
+    end_points['size_residuals'] = size_residuals_normalized * mean_size_arr_t
 
     sem_cls_scores = net_transposed[:, :, 5 + num_heading_bin * 2 + num_size_cluster * 4:]  # Bxnum_proposalx10
     end_points['sem_cls_scores'] = sem_cls_scores
