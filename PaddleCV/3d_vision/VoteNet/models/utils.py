@@ -22,6 +22,7 @@ from __future__ import print_function
 import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
+import numpy as np
 
 def conv1d(input,
            num_filters,
@@ -59,7 +60,7 @@ def conv1d(input,
     """
 
     # Convert the input tensor from dim 3 to dim 4
-    input_4dim = fluid.layers.unsqueeze(input, axes=-1)
+    input_4dim = layers.unsqueeze(input, axes=-1)
 
     # Expand kernel dim from 1 to 2 by appending 1 to the end of the kernel list.
     if isinstance(filter_size, list):
@@ -77,33 +78,33 @@ def conv1d(input,
     bias_attr = ParamAttr(name='{}_conv1d_bias'.format(name)) \
         if not bn else False
 
-    out_4dim = fluid.layers.conv2d(input=input_4dim,
-                                   num_filters=num_filters,
-                                   filter_size=filter_size,
-                                   stride=1,
-                                   padding=0,
-                                   dilation=1,
-                                   groups=groups,
-                                   param_attr=param_attr,
-                                   bias_attr=bias_attr,
-                                   use_cudnn=use_cudnn,
-                                   name=name,
-                                   data_format=data_format)
-                                   # act=act if not bn else None)
+    out_4dim = layers.conv2d(input=input_4dim,
+                               num_filters=num_filters,
+                               filter_size=filter_size,
+                               stride=1,
+                               padding=0,
+                               dilation=1,
+                               groups=groups,
+                               param_attr=param_attr,
+                               bias_attr=bias_attr,
+                               use_cudnn=use_cudnn,
+                               name=name,
+                               data_format=data_format)
+                               # act=act if not bn else None)
     if bn:
         bn_name = name + '_bn'
-        out_4dim = fluid.layers.batch_norm(out_4dim,
-                                           act=act,
-                                           momentum=bn_momentum,
-                                           param_attr=ParamAttr(name=bn_name + '_scale'),
-                                           bias_attr=ParamAttr(name=bn_name + '_offset'),
-                                           moving_mean_name=bn_name + '_mean',
-                                           moving_variance_name=bn_name + '_var')
+        out_4dim = layers.batch_norm(out_4dim,
+                                       act=act,
+                                       momentum=bn_momentum,
+                                       param_attr=ParamAttr(name=bn_name + '_scale'),
+                                       bias_attr=ParamAttr(name=bn_name + '_offset'),
+                                       moving_mean_name=bn_name + '_mean',
+                                       moving_variance_name=bn_name + '_var')
     if act == "relu":
-        out_4dim = fluid.layers.relu(out_4dim)
+        out_4dim = layers.relu(out_4dim)
 
     # Convert the output tensor from dim 4 back to dim 3
-    out_3dim = fluid.layers.squeeze(out_4dim, -1)
+    out_3dim = layers.squeeze(out_4dim, -1)
     return out_3dim
 
 
@@ -112,10 +113,10 @@ def test():
     data = fluid.data(name='data', shape=[8, 128], dtype='float32')
     label = fluid.data(name='label', shape=[8, 1], dtype='int64')
 
-    new_data = fluid.layers.reshape(x=data, shape=[2, 4, 128])
+    new_data = layers.reshape(x=data, shape=[2, 4, 128])
     sh = new_data.shape[:2]
     nn_data = new_data[:, :, :3]
-    int_32_label = fluid.layers.cast(label, dtype='int32')
+    int_32_label = layers.cast(label, dtype='int32')
 
 
     import numpy as np
@@ -124,10 +125,10 @@ def test():
     # t.set(val, fluid.CUDAPlace(0))
     t = fluid.data(name='t', shape=[2, 3], )
 
-    t = fluid.layers.transpose(t, perm=[0, 2, 1])
+    t = layers.transpose(t, perm=[0, 2, 1])
 
-    fc = fluid.layers.fc(input=data, size=100)
-    out = fluid.layers.softmax_with_cross_entropy(logits=fc, label=label)
+    fc = layers.fc(input=data, size=100)
+    out = layers.softmax_with_cross_entropy(logits=fc, label=label)
 
     print(out.shape)
 
@@ -135,7 +136,10 @@ def test_paddle_ops():
     a = fluid.data(name="a", shape=[None, 1], dtype='int64')
     b = fluid.data(name="b", shape=[None, 1], dtype='int64')
 
-    result = fluid.layers.elementwise_add(a, b)
+    result = {}
+
+    result['add'] = layers.elementwise_add(a, b)
+    result['sub'] = layers.elementwise_sub(a, b)
 
     cpu = fluid.CPUPlace()
     exe = fluid.Executor(cpu)
@@ -149,12 +153,35 @@ def test_paddle_ops():
 
     outs = exe.run(
         feed={'a': x, 'b': y},
-        fetch_list=[result]
+        fetch_list=[result['add'], result['sub']]
     )
 
     print("%d+%d=%d" % (data_1, data_2, outs[0][0]))
+    print("%d-%d=%d" % (data_1, data_2, outs[1][0]))
 
+def test_paddle_mat_op():
+    a = fluid.data(name="a", shape=[None, 4], dtype='float32')
+    b = fluid.data(name="b", shape=[None, 4], dtype='float32')
+
+    result = {}
+    result['add'] = a+b
+    result['sub'] = a-b
+
+    cpu = fluid.CPUPlace()
+    exe = fluid.Executor(cpu)
+    exe.run(fluid.default_startup_program())
+
+    x = np.random.rand(2, 4).astype(np.float32)
+    y = np.random.rand(2, 4).astype(np.float32)
+
+    outs = exe.run(
+        feed={'a': x, 'b': y},
+        fetch_list=[result['add'], result['sub']]
+    )
+
+    pass
 
 if __name__=='__main__':
     # TODO: test pointnet2 functions
-    test_paddle_ops()
+    # test_paddle_ops()
+    test_paddle_mat_op()

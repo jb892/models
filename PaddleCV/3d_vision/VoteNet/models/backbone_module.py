@@ -92,7 +92,7 @@ class Pointnet2Backbone(object):
         l3_feature = PointnetFPModule(l3_xyz, l4_xyz, l3_feature, l4_feature, mlps=[256+256, 256, 256], name='fa_layer1')
         fp2_feature = PointnetFPModule(l2_xyz, l3_xyz, l2_feature, l3_feature, mlps=[256+256, 256, 256], name='fa_layer2')
 
-        num_of_seeds = l2_xyz.shape()[1]
+        num_of_seeds = l2_xyz.shape[1]
         fp2_inds = l1_inds[:, 0:num_of_seeds] # indices among the entire input point clouds
         return l2_xyz, fp2_feature, fp2_inds
 

@@ -18,7 +18,7 @@
 - [ ] VoteNet backbone改写paddle（2天）
   - [x] PointNet Backbone module
   - [x] Voting module
-  - [ ] Proposal module
+  - [x] Proposal module
   - [ ] VoteNet
 - [ ] ScanNet数据集处理代码改写paddle（1天）
   - [ ] 原始数据集预处理script
