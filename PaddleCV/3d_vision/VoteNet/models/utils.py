@@ -19,10 +19,15 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import sys
+import six
+import logging
 import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
 import numpy as np
+
+__all__ = ["conv1d"]
 
 def conv1d(input,
            num_filters,

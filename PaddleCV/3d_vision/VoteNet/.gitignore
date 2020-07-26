@@ -1,1 +1,2 @@
 ext_op/src/pointnet_lib.so
+data/*.pickle

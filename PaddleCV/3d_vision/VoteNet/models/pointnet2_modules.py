@@ -26,9 +26,9 @@ import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
 from paddle.fluid.initializer import Constant, Normal
 from ext_op import *
-from utils import conv1d
+# from utils import conv1d
 
-__all__ = ["PointnetSAModuleVotes", "PointnetFPModule"]
+__all__ = ["PointnetSAModuleVotes", "PointnetFPModule", "VoteNet", "VotingModule", "ProposalModule"]
 
 
 # Checked!
