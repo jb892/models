@@ -28,7 +28,10 @@ NEAR_THRESHOLD = 0.3
 GT_VOTE_FACTOR = 3 # number of GT votes per point
 OBJECTNESS_CLS_WEIGHTS = [0.2, 0.8] # put larger weights on positive objectness
 
+__all__ = ['get_loss']
 
+
+# TODO: need to be tested properly, TensorShape is not finalized
 def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_average=None, ignore_idx=-100, reduce=None,
                                         reduction=None):
     # inputs: [N, C, d1, d2, ...]
@@ -48,7 +51,14 @@ def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_avera
 
     loss_mat = input_log_sm_abs * targets_onehot_mat
 
-    weight_mat = weight * targets_onehot_mat
+    assert len(weight) == targets_onehot_mat.shape(-1), 'Error: length of weight array is not equal mat channel size.'
+
+    # Old code: weight_mat = weight * targets_onehot_mat
+    print('target_onehot_mat.shape: {}'.format(targets_onehot_mat.shape))
+
+    weight_mat = layers.concat([weight[0] * targets_onehot_mat[:, 0], weight[1] * targets_onehot_mat[:, 1]], axis=0)
+    weight_mat = layers.reshape(weight_mat, shape=[2, -1])
+    weight_mat = layers.transpose(weight_mat, perm=[1, 0])
 
     loss_mat = weight_mat * loss_mat
 
@@ -89,7 +99,7 @@ def huber_loss(error, delta=1.0):
     # quadratic = torch.min(abs_error, torch.FloatTensor([delta]))
     quadratic = layers.clamp(abs_error, max=delta)
     linear = (abs_error - quadratic)
-    loss = 0.5 * quadratic ** 2 + delta * linear
+    loss = 0.5 * layers.pow(quadratic,factor=2) + delta * linear
     return loss
 
 def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
@@ -116,7 +126,7 @@ def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
     elif l1:
         pc_dist = layers.reduce_sum(layers.abs(pc_diff), dim=-1)  # (B,N,M)
     else:
-        pc_dist = layers.reduce_sum(pc_diff ** 2, dim=-1)  # (B,N,M)
+        pc_dist = layers.reduce_sum(layers.pow(pc_diff,factor=2), dim=-1)  # (B,N,M)
     dist1, idx1 = layers.reduce_sum(pc_dist, dim=2)  # (B,N)
     dist2, idx2 = layers.reduce_min(pc_dist, dim=1)  # (B,M)
     return dist1, idx1, dist2, idx2
@@ -249,13 +259,14 @@ def compute_objectness_loss(end_points):
     # TODO: CrossEntropyLoss
     objectness_scores = end_points['objectness_scores']
 
-    weight_tensor = fluid.Tensor()
-    weight_tensor.set(OBJECTNESS_CLS_WEIGHTS, fluid.CUDAPlace(0))
+    objectness_scores_T = layers.transpose(objectness_scores, perm=[0, 2, 1]) # TODO: Check if transpose is required
 
-    criterion = layers.softmax_with_cross_entropy(weight_tensor, reduction='none')
-    objectness_scores_T = layers.transpose(objectness_scores, perm=[0, 2, 1])
+    objectness_loss = weighted_softmax_cross_entropy_loss(
+        inputs=objectness_scores_T,
+        targets=objectness_label,
+        weight=OBJECTNESS_CLS_WEIGHTS,
+        reduction='none')
 
-    objectness_loss = criterion(objectness_scores_T, objectness_label)
     objectness_loss = layers.reduce_sum(objectness_loss * objectness_mask) / (layers.reduce_sum(objectness_mask) + 1e-6)
 
     # Set assignment
@@ -279,10 +290,10 @@ def compute_box_and_sem_cls_loss(end_points, config):
         sem_cls_loss
     """
 
-    num_heading_bin = config.num_heading_bin
-    num_size_cluster = config.num_size_cluster
-    num_class = config.num_class
-    mean_size_arr = config.mean_size_arr
+    num_heading_bin = config['num_heading_bin']
+    num_size_cluster = config['num_size_cluster']
+    num_class = config['num_class']
+    mean_size_arr = config['mean_size_arr']
 
     object_assignment = end_points['object_assignment']
     batch_size = object_assignment.shape[0]
@@ -399,7 +410,13 @@ def get_loss(end_points, config):
                 box_label_mask,
                 vote_label, vote_label_mask
             }
-        config: dataset config instance
+        config: dict
+            {
+                num_heading_bin,
+                num_size_cluster,
+                num_class,
+                mean_size_arr
+            }
     Returns:
         loss: pytorch scalar tensor
         end_points: dict

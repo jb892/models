@@ -26,6 +26,7 @@ import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
 from paddle.fluid.initializer import Constant, Normal
 from ext_op import *
+from loss_helper import *
 # from utils import conv1d
 
 __all__ = ["PointnetSAModuleVotes", "PointnetFPModule", "VoteNet", "VotingModule", "ProposalModule"]
@@ -585,16 +586,16 @@ class VotingModule(object):
 
 # Checked!
 class ProposalModule(object):
-    def __init__(self, num_class, num_heading_bin, num_size_cluster, mean_size_arr, num_proposal, sampling, seed_feat_dim=256):
+    def __init__(self, num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, seed_feat_dim=256):
         self.num_class = num_class
         self.num_heading_bin = num_heading_bin
         self.num_size_cluster = num_size_cluster
-        self.mean_size_arr = mean_size_arr
+        # self.mean_size_arr = mean_size_arr
         self.num_proposal = num_proposal
         self.sampling = sampling
         self.seed_feat_dim = seed_feat_dim
 
-    def build(self, xyz, features, end_points):
+    def build(self, xyz, features, end_points, mean_size_arr):
         """
         Args:
             xyz: (B,K,3)
@@ -664,7 +665,7 @@ class ProposalModule(object):
         net = layers.transpose(net, perm=[0, 2, 1])
 
         end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
-                                   self.mean_size_arr)
+                                   mean_size_arr)
         return end_points
 
 # Checked!
@@ -719,29 +720,25 @@ class VoteNet(object):
         vote_factor: (default: 1)
             Number of votes generated from each seed point.
     """
-    def __init__(self, num_class, num_points, num_heading_bin, num_size_cluster, mean_size_arr,
+    def __init__(self, num_class, num_points, num_heading_bin, num_size_cluster,
                  input_feature_dim=0, num_proposal=128, vote_factor=1, sampling='vote_fps'):
         self.num_class = num_class
         self.num_points = num_points
         self.num_heading_bin = num_heading_bin
         self.num_size_cluster = num_size_cluster
-        self.mean_size_arr = mean_size_arr
-        assert(mean_size_arr.shape[0] == self.num_size_cluster)
         self.input_feature_dim = input_feature_dim
         self.num_proposal = num_proposal
         self.vote_factor = vote_factor
         self.sampling = sampling
 
+        # init Pointnet2Backbone
         self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim)
 
+        # init VotingModule
         self.vgen = VotingModule(self.vote_factor, 256)
 
-        # self.mean_size_arr = fluid.data(name='mean_size_arr',
-        #                                 shape=[None, 3],
-        #                                 dtype='float32',
-        #                                 lod_level=0)
-
-        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, self.mean_size_arr, num_proposal, sampling)
+        # init proposal module
+        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling)
 
     def build_input(self):
         self.xyz = fluid.data(name='xyz',
@@ -756,21 +753,23 @@ class VoteNet(object):
                                 shape=[None, self.num_points, 1],
                                 dtype='int64',
                                 lod_level=0)
-
+        self.mean_size_arr = fluid.data(name='mean_size_arr',
+                                        shape=[self.num_class, 3],
+                                        dtype='float32',
+                                        lod_level=0)
         self.loader = fluid.io.DataLoader.from_generator(
-            feed_list=[self.xyz, self.feature, self.label],
+            feed_list=[self.xyz, self.feature, self.label, self.mean_size_arr],
             capacity=64,
             use_double_buffer=True,
             iterable=False)
-        self.feed_vars = [self.xyz, self.feature, self.label]
+        self.feed_vars = [self.xyz, self.feature, self.label, self.mean_size_arr]
 
-
-    def build(self, input_xyz, input_feature=None):
+    def build(self):
         end_points = {}
 
         # Backbone point feature learning
         # seed_xyz, seed_features, seed_inds = self.backbone_net(input_xyz, input_feature)
-        end_points = self.backbone_net(input_xyz, input_feature, end_points)
+        end_points = self.backbone_net.build(self.xyz, self.feature, end_points)
 
         # =========== Hough voting ==========
         xyz = end_points['fp2_xyz']
@@ -781,7 +780,7 @@ class VoteNet(object):
 
         # Convert features tensor from 'NWC' to 'NCW' format
         features = layers.transpose(features, perm=[0, 2, 1])
-        vote_xyz, vote_features = self.vgen(xyz, features) # vote_features.shape = [B, out_dim, num_vote]
+        vote_xyz, vote_features = self.vgen.build(xyz, features) # vote_features.shape = [B, out_dim, num_vote]
         features_norm = layers.sqrt(layers.reduce_sum(layers.pow(vote_features, factor=2.0), dim=1, keep_dim=False))
         vote_features = vote_features / layers.unsqueeze(features_norm, 1) # features_norm.shape = [B, 1, num_vote]
         # Convert features tensor from 'NCW' to 'NWC'
@@ -791,25 +790,51 @@ class VoteNet(object):
         end_points['vote_features'] = vote_features
 
         # Vote aggregation and detection
-        output = self.pnet(vote_xyz, vote_features, end_points)
+        end_points = self.pnet.build(vote_xyz, vote_features, end_points, self.mean_size_arr)
 
-        return output
+        config = {
+            'num_heading_bin': self.num_heading_bin,
+            'num_size_cluster': self.num_size_cluster,
+            'num_class': self.num_class,
+            'mean_size_arr': self.mean_size_arr
+        }
+        # Calculate loss
+        self.loss = get_loss(end_points, config)
 
-def prepare_input_data(num_points, input_feature_dim):
+        # return end_points
+
+    def get_feeds(self):
+        return self.feed_vars
+
+    def get_loss(self):
+        return self.loss
+
+    def get_loader(self):
+        return self.loader
+
+    def get_outputs(self):
+        # return {}
+        return {'loss': self.loss}
+
+def prepare_input_data(num_points, num_class, input_feature_dim):
 
     xyz = fluid.data(name='xyz',
-                          shape=[None, num_points, 3],
-                          dtype='float32',
-                          lod_level=0)
+                    shape=[None, num_points, 3],
+                    dtype='float32',
+                    lod_level=0)
     feature = fluid.data(name='feature',
-                              shape=[None, num_points, input_feature_dim],
-                              dtype='float32',
-                              lod_level=0)
+                        shape=[None, num_points, input_feature_dim],
+                        dtype='float32',
+                        lod_level=0)
     label = fluid.data(name='label',
-                            shape=[None, num_points, 1],
-                            dtype='int64',
-                            lod_level=0)
-    return xyz, feature, label
+                        shape=[None, num_points, 1],
+                        dtype='int64',
+                        lod_level=0)
+    mean_size_arr = fluid.data(name='mean_size_arr',
+                                shape=[num_class, 3],
+                                dtype='float32',
+                                lod_level=0)
+    return xyz, feature, label, mean_size_arr
 
 def test_backbone():
     # ================ Define param ================
@@ -842,11 +867,6 @@ def test_backbone():
 
     print(outs.shape)
 
-    # # case #2 feature_dim = 3
-    # in_feature_dim = 3
-    # backbone2 = Pointnet2Backbone(input_feature_dim=in_feature_dim)
-
-
 def test_VoteNet():
     num_class = 10
     num_heading_bin = 12
@@ -856,6 +876,14 @@ def test_VoteNet():
 
     net = VoteNet(num_class, num_heading_bin, num_size_cluster, mean_size_arr)
 
+def test_load_mean_size_arr():
+    path = '../dataset/scannet/meta_data/scannet_means.npz'
+
+    mean_size_arr = np.load(path)['arr_0']
+
+    print('mean_size_arr.shape: {}'.format(mean_size_arr.shape))
+    print('mean_size_arr[0]: {}'.format(mean_size_arr[0]))
 
 if __name__ == '__main__':
     test_backbone()
+    # test_load_mean_size_arr()

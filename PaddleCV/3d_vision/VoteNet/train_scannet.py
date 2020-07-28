@@ -35,7 +35,7 @@ logging.basicConfig(level=logging.INFO, format=FORMAT, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    parser = argparse.ArgumentParser("PointNet++ semantic segmentation train script")
+    parser = argparse.ArgumentParser("VoteNet 3D Object Detection train script")
     parser.add_argument(
         '--model',
         type=str,
@@ -81,6 +81,16 @@ def parse_args():
         type=int,
         default=18,
         help='number of classes in dataset, default: 18')
+    parser.add_argument(
+        '--num_heading_bin',
+        type=int,
+        default=1,
+        help='number of heading bin, default: 1')
+    parser.add_argument(
+        '--num_size_cluster',
+        type=int,
+        default=18,
+        help='number of size of cluster, default: 18')
     parser.add_argument(
         '--lr',
         type=float,
@@ -163,51 +173,6 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-# parser = argparse.ArgumentParser()
-# parser.add_argument('--model', default='votenet', help='Model file name [default: votenet]')
-# parser.add_argument('--dataset', default='scannet', help='Dataset name. [default: scannet]')
-# parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
-# parser.add_argument('--log_dir', default='log', help='Dump dir to save model checkpoint [default: log]')
-# parser.add_argument('--dump_dir', default=None, help='Dump dir to save sample outputs [default: None]')
-# parser.add_argument('--num_point', type=int, default=20000, help='Point Number [default: 20000]')
-# parser.add_argument('--num_target', type=int, default=256, help='Proposal number [default: 256]')
-# parser.add_argument('--vote_factor', type=int, default=1, help='Vote factor [default: 1]')
-# parser.add_argument('--cluster_sampling', default='vote_fps', help='Sampling strategy for vote clusters: vote_fps, seed_fps, random [default: vote_fps]')
-# parser.add_argument('--ap_iou_thresh', type=float, default=0.25, help='AP IoU threshold [default: 0.25]')
-# parser.add_argument('--max_epoch', type=int, default=180, help='Epoch to run [default: 180]')
-# parser.add_argument('--batch_size', type=int, default=8, help='Batch Size during training [default: 8]')
-# parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
-# parser.add_argument('--weight_decay', type=float, default=0, help='Optimization L2 weight decay [default: 0]')
-# parser.add_argument('--bn_decay_step', type=int, default=20, help='Period of BN decay (in epochs) [default: 20]')
-# parser.add_argument('--bn_decay_rate', type=float, default=0.5, help='Decay rate for BN decay [default: 0.5]')
-# parser.add_argument('--lr_decay_steps', default='80,120,160', help='When to decay the learning rate (in epochs) [default: 80,120,160]')
-# parser.add_argument('--lr_decay_rates', default='0.1,0.1,0.1', help='Decay rates for lr decay [default: 0.1,0.1,0.1]')
-# parser.add_argument('--no_height', action='store_true', help='Do NOT use height signal in input.')
-# parser.add_argument('--use_color', action='store_true', help='Use RGB color in input.')
-# parser.add_argument('--use_sunrgbd_v2', action='store_true', help='Use V2 box labels for SUN RGB-D dataset')
-# parser.add_argument('--overwrite', action='store_true', help='Overwrite existing log and dump folders.')
-# parser.add_argument('--dump_results', action='store_true', help='Dump results.')
-# FLAGS = parser.parse_args()
-
-# ----------- GLOBAL CONFIG -------------
-# BATCH_SIZE = FLAGS.batch_size
-# NUM_POINT = FLAGS.num_point
-# MAX_EPOCH = FLAGS.max_epoch
-# BASE_LEARNING_RATE = FLAGS.learning_rate
-# BN_DECAY_STEP = FLAGS.bn_decay_step
-# BN_DECAY_RATE = FLAGS.bn_decay_rate
-# LR_DECAY_STEPS = [int(x) for x in FLAGS.lr_decay_steps.split(',')]
-# LR_DECAY_RATES = [float(x) for x in FLAGS.lr_decay_rates.split(',')]
-# assert(len(LR_DECAY_STEPS)==len(LR_DECAY_RATES))
-# LOG_DIR = FLAGS.log_dir
-# DEFAULT_DUMP_DIR = os.path.join(BASE_DIR, os.path.basename(LOG_DIR))
-# DUMP_DIR = FLAGS.dump_dir if FLAGS.dump_dir is not None else DEFAULT_DUMP_DIR
-# DEFAULT_CHECKPOINT_PATH = os.path.join(LOG_DIR, 'checkpoint.tar')
-# CHECKPOINT_PATH = FLAGS.checkpoint_path if FLAGS.checkpoint_path is not None \
-#     else DEFAULT_CHECKPOINT_PATH
-# FLAGS.DUMP_DIR = DUMP_DIR
-
-
 def train():
     args = parse_args()
     print_arguments(args)
@@ -216,8 +181,6 @@ def train():
 
     if not os.path.isdir(args.save_dir):
         os.makedirs(args.save_dir)
-
-    assert args.model in ['MSG', 'SSG'], "--model can only be 'MSG' or 'SSG'"
 
     # build model
     if args.enable_ce:
@@ -228,11 +191,28 @@ def train():
     startup = fluid.program()
     train_prog = fluid.program()
 
+    NUM_INPUT_FEATURE_CHANNEL = int(args.use_color) * 3 + int(not args.no_height) * 1
+
     with fluid.program_guard(train_prog, startup):
         with fluid.unique_name.guard():
             train_model = VoteNet(
-                num_class=args.num_classes
+                num_class=args.num_classes,
+                num_points=args.num_points,
+                num_heading_bin=args.num_heading_bin,
+                num_size_cluster=args.num_size_cluster,
+                num_proposal=args.num_target,
+                input_feature_dim=NUM_INPUT_FEATURE_CHANNEL,
+                vote_factor=args.vote_factor,
+                sampling=args.cluster_sampling
             )
+
+            train_model.build()
+
+            train_loader = train_model.get_loader()
+            train_outputs = train_model.get_outputs()
+            train_loss = train_outputs['loss']
+
+
 
 
 def get_cards():

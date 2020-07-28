@@ -184,9 +184,40 @@ def test_paddle_mat_op():
         fetch_list=[result['add'], result['sub']]
     )
 
-    pass
+def test_paddle_tensor():
+    gpu = fluid.CUDAPlace(0)
+
+    # OBJECTNESS_CLS_WEIGHTS = np.ndarray(shape=(2,), buffer=np.array([0.2, 0.8]), dtype=float)
+    a = fluid.data(name='a', shape=(3, ), dtype='float32')
+    b = fluid.data(name='b', shape=(3, ), dtype='float32')
+
+    # sum_t = a[0] * 0.2 # weight_tensor
+
+    # last_c0 = a[:, 0]
+
+    conca = layers.concat([a, b], axis=-1)
+    conca = layers.reshape(conca, shape=[2, -1])
+    trans = layers.transpose(conca, perm=[1, 0])
+
+    print(len(a.shape))
+
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    a_np = np.random.rand(3, ).astype(np.float32)
+    b_np = np.random.rand(3, ).astype(np.float32)
+    # print(a_np[0])
+
+    out = exe.run(
+        feed={'a': a_np, 'b': b_np},
+        fetch_list=[a, b, conca, trans]
+    )
+
+    print(out)
+
 
 if __name__=='__main__':
     # TODO: test pointnet2 functions
     # test_paddle_ops()
-    test_paddle_mat_op()
+    # test_paddle_mat_op()
+    test_paddle_tensor()
