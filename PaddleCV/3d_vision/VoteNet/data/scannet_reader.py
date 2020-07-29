@@ -31,58 +31,40 @@ from plyfile import PlyData, PlyElement
 import paddle.fluid as fluid
 import paddle.fluid.framework as framework
 
-__all__ = ["ScannetReader", "ScannetWholeSceneReader"]
+__all__ = ["ScannetDetectionReader", "ScannetReader", "ScannetWholeSceneReader"]
 
 logger = logging.getLogger(__name__)
 
+# TODO: Scannet 3D Detection dataset preprocesser and reader 
+class ScannetDetectionReader(object):
+    def __init__(self, data_dir, mean_size_arr_path, mode='train'):
+        pass
+
+    def get_reader(self):
+
+        def reader():
+
+            pass
+
+        return reader
+
+
+
 class ScannetReader(object):
-    def __init__(self, data_dir, mode='train'):
+    def __init__(self, data_dir, mean_size_arr_path, mode='train'):
         self.data_dir = data_dir
         self.mode = mode
 
         self.scene_xyz_name_list = glob.glob(os.path.join(data_dir, '{}/*_xyz.npy'.format(mode)))
         # print(self.scene_xyz_name_list[:10])
         self.scene_label_name_list = glob.glob(os.path.join(data_dir, '{}/*_lab.npy'.format(mode)))
-
+        self.mean_size_arr = np.load(mean_size_arr_path)['arr_0']
 
     def _read_data_file(self, fname):
         assert osp.isfile(fname), \
             "{} is not a file".format(fname)
         with open(fname) as f:
             return [line.strip() for line in f]
-
-    # # TODO: Load scannet data with .pickle extension
-    # def load_data(self):
-    #     logger.info('Loading ScannetV2 dataset from {} ...'.format(self.data_dir))
-    #
-    #     # Read pickle file
-    #     with open(self.data_filename, 'rb') as fp:
-    #         self.scene_points_list = pickle.load(fp, encoding='bytes')
-    #         self.semantic_labels_list = pickle.load(fp, encoding='bytes')
-    #     # # change to [unanotated, wall, floor]
-    #     # for idx, item in enumerate(self.semantic_labels_list):
-    #     #     item[item > 2] = 0
-    #     #     self.semantic_labels_list[idx] = item
-    #
-    #     if self.mode == 'train':
-    #         labelweights = np.zeros(3)
-    #         for seg in self.semantic_labels_list:
-    #             tmp, _ = np.histogram(seg, range(4))
-    #             labelweights += tmp
-    #         labelweights = labelweights.astype(np.float32)
-    #         labelweights = labelweights / np.sum(labelweights)
-    #         self.labelweights = 1 / np.log(1.2 + labelweights)
-    #     elif self.mode == 'test':
-    #         self.labelweights = np.ones(3)
-    #
-    #     # # Write npy file.
-    #     # os.system('mkdir {}/'.format(self.mode))
-    #     #
-    #     # for idx, scene in enumerate(self.scene_points_list):
-    #     #     np.save('{}/{}_xyz.npy'.format(self.mode, idx), scene)
-    #     #     np.save('{}/{}_lab.npy'.format(self.mode, idx), self.semantic_labels_list[idx])
-    #
-    #     logger.info("Load data finished")
 
     def load_scene(self, idx, mode):
         scene = np.load('{}/{}_xyz.npy'.format(mode, idx))
@@ -97,11 +79,13 @@ class ScannetReader(object):
         logger.info('scene_size: {}'.format(scene_size))
         logger.info('Mode: ' + self.mode)
         # self.npoints = num_points
+        mean_size_arr = self.mean_size_arr
+        scene_xyz_name_list = self.scene_xyz_name_list
 
         def reader():
             batch_out = []
 
-            for idx, xyz_path in enumerate(self.scene_xyz_name_list):
+            for idx, xyz_path in enumerate(scene_xyz_name_list):
 
                 point_set = np.load(xyz_path)
                 label_path = xyz_path[:-7] + 'lab.npy'
@@ -139,7 +123,7 @@ class ScannetReader(object):
 
                 feature = np.zeros((num_points, 6)).astype(np.float32)
 
-                batch_out.append((point_set, feature, semantic_seg))
+                batch_out.append((point_set, feature, semantic_seg, mean_size_arr))
 
                 if len(batch_out) == batch_size:
                     yield batch_out

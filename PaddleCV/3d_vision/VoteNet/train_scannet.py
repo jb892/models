@@ -26,7 +26,7 @@ import paddle.fluid.layers as layers
 import paddle.fluid.framework as framework
 
 from models import *
-from data.scannet_reader import ScannetReader
+from data.scannet_reader import ScannetDetectionReader
 from utils import *
 
 logging.root.handlers = []
@@ -54,8 +54,8 @@ def parse_args():
     parser.add_argument(
         '--num_points',
         type=int,
-        default=8192,
-        help='number of points in a sample, default: 8192')
+        default=20000,
+        help='number of points in a sample, default: 20000')
     parser.add_argument(
         '--num_target',
         type=int,
@@ -139,16 +139,26 @@ def parse_args():
         action='store_true',
         help='Dump results.')
     parser.add_argument(
+        '--dump_dir',
+        type=str,
+        default=None,
+        help='Dump dir to save sample outputs [default: None]')
+    parser.add_argument(
         '--epoch',
         type=int,
-        default=201,
-        help='epoch number. default 201.')
+        default=181,
+        help='epoch number. default 181.')
     parser.add_argument(
         '--data_dir',
         type=str,
         # default='dataset/Indoor3DSemSeg/indoor3d_sem_seg_hdf5_data',
         default='data',
         help='dataset directory')
+    parser.add_argument(
+        '--mean_size_arr_path',
+        type=str,
+        default='../dataset/scannet/meta_data/scannet_means.npz',
+        help='ScanNet mean npy file path')
     parser.add_argument(
         '--save_dir',
         type=str,
@@ -188,6 +198,7 @@ def train():
         fluid.default_main_program().random_seed = SEED
         framework.default_startup_program().random_seed = SEED
 
+    # Build train model
     startup = fluid.program()
     train_prog = fluid.program()
 
@@ -207,13 +218,163 @@ def train():
             )
 
             train_model.build()
-
-            train_loader = train_model.get_loader()
+            train_feeds = train_model.get_feeds()
             train_outputs = train_model.get_outputs()
+            train_loader = train_model.get_loader()
             train_loss = train_outputs['loss']
+            lr = layers.exponential_decay(
+                learning_rate=args.lr,
+                decay_steps=args.decay_steps,
+                decay_rate=args.lr_decay,
+                staircase=True
+            )
+            lr = layers.clip(lr, 1e-5, args.lr)
+            params = []
+            for var in train_prog.list_vars():
+                if fluid.io.is_parameter(var):
+                    params.append(var.name)
+            optimizer = fluid.optimizer.Adam(
+                learning_rate=lr,
+                regularization=fluid.regularizer.L2Decay(args.weight_decay)
+            )
+            optimizer.minimize(train_loss, parameter_list=params)
+    train_keys, train_values = parse_outputs(train_outputs)
 
+    # Build test model
+    test_prog = fluid.Program()
+    with fluid.program_guard(test_prog, startup):
+        with fluid.unique_name.guard():
+            test_model = VoteNet(
+                num_class=args.num_classes,
+                num_points=args.num_points,
+                num_heading_bin=args.num_heading_bin,
+                num_size_cluster=args.num_size_cluster,
+                num_proposal=args.num_target,
+                input_feature_dim=NUM_INPUT_FEATURE_CHANNEL,
+                vote_factor=args.vote_factor,
+                sampling=args.cluster_sampling
+            )
+            test_model.build()
+            test_feeds = test_model.get_feeds()
+            test_outputs = test_model.get_outputs()
+            test_loader = test_model.get_loader()
+    test_prog = test_prog.clone(True)
+    test_keys, test_values = parse_outputs(test_outputs)
 
+    place = fluid.CUDAPlace(0) if args.use_gpu else fluid.CPUPlace()
+    exe = fluid.Executor(place)
+    exe.run(startup)
 
+    if args.resume:
+        if not os.path.isdir(args.resume):
+            assert os.path.exists("{}.pdparams".format(args.resume)), \
+                "Given resume weight {}.pdparams not exist.".format(args.resume)
+            assert os.path.exists("{}.pdopt".format(args.resume)), \
+                "Given resume optimizer state {}.pdopt not exist.".format(args.resume)
+        fluid.load(train_prog, args.resume, exe)
+
+    build_strategy = fluid.BuildStrategy()
+    build_strategy.memory_optimize = False
+    build_strategy.enable_inplace = False
+    build_strategy.fuse_all_optimizer_ops = False
+    train_compile_prog = fluid.compiler.CompiledProgram(
+        train_prog).with_data_parallel(loss_name=train_loss.name,
+                                       build_strategy=build_strategy)
+    test_compile_prog = fluid.compiler.CompiledProgram(test_prog)
+
+    def save_model(exe, prog, path):
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        logger.info("Save model to {}".format(path))
+        fluid.save(prog, path)
+
+    # Get reader
+    scannet_reader_tr = ScannetDetectionReader(args.data_dir, args.mean_size_arr_path, mode='train')
+    scannet_reader_te = ScannetDetectionReader(args.data_dir, args.mean_size_arr_path, mode='test')
+    train_reader = scannet_reader_tr.get_reader(args.batch_size, args.num_points)
+    test_reader = scannet_reader_te.get_reader(args.batch_size, args.num_points)
+    train_loader.set_sample_list_generator(train_reader, place)
+    test_loader.set_sample_list_generator(test_reader, place)
+
+    train_stat = Stat()
+    test_stat = Stat()
+
+    ce_time = 0
+    ce_loss = []
+
+    for epoch_id in range(args.epoch):
+        try:
+            train_loader.start()
+            train_iter = 0
+            train_periods = []
+
+            while True:
+                cur_time = time.time()
+                train_outs = exe.run(train_compile_prog, fetch_list=train_values + [lr.name])
+                period = time.time() - cur_time
+                train_periods.append(period)
+                train_stat.update(train_keys, train_outs[:-1])
+                if train_iter % args.log_interval == 0:
+                    log_str = ""
+                    for name, values in zip(train_keys + ['learning_rate'], train_outs):
+                        log_str += "{}: {:.5f}, ".format(name, np.mean(values))
+                        if name == 'loss':
+                            ce_loss.append(np.mean(values))
+                    logger.info(
+                        "[TRAIN] Epoch {}, batch {}: {}time: {:.2f}".format(epoch_id, train_iter, log_str, period))
+                train_iter += 1
+
+        except fluid.core.EOFException:
+            logger.info("[TRAIN] Epoch {} finished, {}average time: {:.2f}".format(epoch_id, train_stat.get_mean_log(),
+                                                                                   np.mean(train_periods[1:])))
+            ce_time = np.mean(train_periods[1:])
+            save_model(exe, train_prog, os.path.join(args.save_dir, str(epoch_id), "votenet_det"))
+
+            # evaluation
+            if not args.enable_ce:
+                try:
+                    test_loader.start()
+                    test_iter = 0
+                    test_periods = []
+                    while True:
+                        cur_time = time.time()
+                        test_outs = exe.run(test_compile_prog, fetch_list=test_values)
+                        period = time.time() - cur_time
+                        test_periods.append(period)
+                        test_stat.update(test_keys, test_outs)
+                        if test_iter % args.log_interval == 0:
+                            log_str = ""
+                            for name, value in zip(test_keys, test_outs):
+                                log_str += "{}: {:.4f}, ".format(name, np.mean(value))
+                            logger.info("[TEST] Epoch {}, batch {}: {}time: {:.2f}".format(epoch_id, test_iter, log_str,
+                                                                                           period))
+                        test_iter += 1
+                except fluid.core.EOFException:
+                    logger.info(
+                        "[TEST] Epoch {} finished, {}average time: {:.2f}".format(epoch_id, test_stat.get_mean_log(),
+                                                                                  np.mean(test_periods[1:])))
+                finally:
+                    test_loader.reset()
+                    test_stat.reset()
+                    test_periods = []
+
+        finally:
+            train_loader.reset()
+            train_stat.reset()
+            train_periods = []
+
+    # only for ce
+    if args.enable_ce:
+        card_num = get_cards()
+        _loss = 0
+        _time = 0
+        try:
+            _time = ce_time
+            _loss = np.mean(ce_loss[1:])
+        except:
+            print("ce info error")
+        print("kpis\ttrain_seg_%s_duration_card%s\t%s" % (args.model, card_num, _time))
+        print("kpis\ttrain_seg_%s_loss_card%s\t%f" % (args.model, card_num, _loss))
 
 def get_cards():
     num = 0

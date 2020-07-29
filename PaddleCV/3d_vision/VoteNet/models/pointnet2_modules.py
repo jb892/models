@@ -25,8 +25,9 @@ import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
 from paddle.fluid.initializer import Constant, Normal
-from ext_op import *
-from loss_helper import *
+from .ext_op import *
+# from ext_op import *
+from .loss_helper import *
 # from utils import conv1d
 
 __all__ = ["PointnetSAModuleVotes", "PointnetFPModule", "VoteNet", "VotingModule", "ProposalModule"]
@@ -799,9 +800,7 @@ class VoteNet(object):
             'mean_size_arr': self.mean_size_arr
         }
         # Calculate loss
-        self.loss = get_loss(end_points, config)
-
-        # return end_points
+        self.loss, self.end_points = get_loss(end_points, config)
 
     def get_feeds(self):
         return self.feed_vars
@@ -813,8 +812,7 @@ class VoteNet(object):
         return self.loader
 
     def get_outputs(self):
-        # return {}
-        return {'loss': self.loss}
+        return {'loss': self.loss, 'obj_acc': self.end_points['obj_acc']}
 
 def prepare_input_data(num_points, num_class, input_feature_dim):
 

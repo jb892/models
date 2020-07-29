@@ -17,17 +17,20 @@ from __future__ import absolute_import
 from . import pointnet2_modules
 from . import utils
 from . import loss_helper
+from .ext_op import pointnet_lib
 #from . import pointnet2_seg
 #from . import pointnet2_cls
 
 from .pointnet2_modules import *
 from .utils import *
 from .loss_helper import *
+from .ext_op.pointnet_lib import *
 #from .pointnet2_seg import *
 #from .pointnet2_cls import *
 
 __all__ = pointnet2_modules.__all__
 __all__ += utils.__all__
 __all__ += loss_helper.__all__
+__all__ += pointnet_lib.__all__
 #__all__ += pointnet2_seg.__all__
 #__all__ += pointnet2_cls.__all__

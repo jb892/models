@@ -22,14 +22,16 @@ from __future__ import print_function
 import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 import numpy as np
+import logging
 
 FAR_THRESHOLD = 0.6
 NEAR_THRESHOLD = 0.3
-GT_VOTE_FACTOR = 3 # number of GT votes per point
-OBJECTNESS_CLS_WEIGHTS = [0.2, 0.8] # put larger weights on positive objectness
+GT_VOTE_FACTOR = 3  # number of GT votes per point
+OBJECTNESS_CLS_WEIGHTS = [0.2, 0.8]  # put larger weights on positive objectness
 
 __all__ = ['get_loss']
 
+logger = logging.getLogger(__name__)
 
 # TODO: need to be tested properly, TensorShape is not finalized
 def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_average=None, ignore_idx=-100, reduce=None,
@@ -39,13 +41,16 @@ def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_avera
     # weight: [N, ]
     assert(inputs.shape[0] == len(weight) == len(targets))
 
+    # lets print the inputs.shape and targets.shape here
+    logger.info('Weighted_softmax_cross_entropy_loss: inputs.shape={}, targets.shape={}'.format(inputs.shape, targets.shape))
+
     num_of_class = inputs.shape[1]
 
     # Apply log_softmax
     input_log_sm = layers.log_softmax(input=inputs, axis=1)
 
     # Convert target index list to one-hot encode
-    targets_onehot_mat = layers.one_hot(targets, depth=num_of_class)
+    targets_onehot_mat = fluid.one_hot(targets, depth=num_of_class)
 
     input_log_sm_abs = layers.abs(input_log_sm)
 
@@ -67,14 +72,13 @@ def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_avera
     return loss
 
 def gather_dim1(val_tensor, inds_tensor):
-    """
-    Apply gather operation to dim=1
+    """Apply gather operation to dim=1
+
     :param val_tensor: input tensor
     :param inds_tensor: idx list
-
     :return:
     """
-    assert(len(val_tensor)==len(inds_tensor)) # input tensor and inds tensor must have the same length
+    assert len(val_tensor) == len(inds_tensor) # input tensor and inds tensor must have the same length
 
     tmp = []
     for idx, val in enumerate(val_tensor):
@@ -82,6 +86,28 @@ def gather_dim1(val_tensor, inds_tensor):
     out_tensor = (layers.concat(input=tmp))
 
     return out_tensor
+
+def test_paddle_max():
+    inputs = fluid.data(name='inputs', shape=[2, 3, 3], dtype='float32')
+
+    gpu = fluid.CUDAPlace(0)
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    # Define operation here
+    result = layers.argmax(inputs, axis=1)
+    result2 = layers.reduce_max(inputs, dim=1)
+
+
+    input_arr = np.random.rand(2, 3, 3).astype(np.float32)
+    print(input_arr)
+
+    out = exe.run(
+        feed={'inputs': input_arr},
+        fetch_list=[result, result2]
+    )
+
+    print(out)
 
 def huber_loss(error, delta=1.0):
     """
@@ -99,7 +125,7 @@ def huber_loss(error, delta=1.0):
     # quadratic = torch.min(abs_error, torch.FloatTensor([delta]))
     quadratic = layers.clamp(abs_error, max=delta)
     linear = (abs_error - quadratic)
-    loss = 0.5 * layers.pow(quadratic,factor=2) + delta * linear
+    loss = 0.5 * layers.pow(quadratic, factor=2) + delta * linear
     return loss
 
 def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
@@ -126,39 +152,15 @@ def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
     elif l1:
         pc_dist = layers.reduce_sum(layers.abs(pc_diff), dim=-1)  # (B,N,M)
     else:
-        pc_dist = layers.reduce_sum(layers.pow(pc_diff,factor=2), dim=-1)  # (B,N,M)
-    dist1, idx1 = layers.reduce_sum(pc_dist, dim=2)  # (B,N)
-    dist2, idx2 = layers.reduce_min(pc_dist, dim=1)  # (B,M)
-    return dist1, idx1, dist2, idx2
+        pc_dist = layers.reduce_sum(layers.pow(pc_diff, factor=2), dim=-1)  # (B,N,M)
 
-# def demo_nn_distance():
-#     np.random.seed(0)
-#     pc1arr = np.random.random((1, 5, 3))
-#     pc2arr = np.random.random((1, 6, 3))
-#     pc1 = fluid.create_lod_tensor(pc1arr.astype(np.float32))
-#     pc2 = fluid.create_lod_tensor(pc2arr.astype(np.float32))
-#     dist1, idx1, dist2, idx2 = nn_distance(pc1, pc2)
-#     print(dist1)
-#     print(idx1)
-#     dist = np.zeros((5, 6))
-#     for i in range(5):
-#         for j in range(6):
-#             dist[i, j] = np.sum((pc1arr[0, i, :] - pc2arr[0, j, :]) ** 2)
-#     print(dist)
-#     print('-' * 30)
-#     print('L1smooth dists:')
-#     dist1, idx1, dist2, idx2 = nn_distance(pc1, pc2, True)
-#     print(dist1)
-#     print(idx1)
-#     dist = np.zeros((5, 6))
-#     for i in range(5):
-#         for j in range(6):
-#             error = np.abs(pc1arr[0, i, :] - pc2arr[0, j, :])
-#             quad = np.minimum(error, 1.0)
-#             linear = error - quad
-#             loss = 0.5 * quad ** 2 + 1.0 * linear
-#             dist[i, j] = np.sum(loss)
-#     print(dist)
+    dist1 = layers.reduce_min(pc_dist, dim=2)  # (B,N)
+    idx1 = layers.argmin(pc_dist, dim=2)
+
+    dist2 = layers.reduce_min(pc_dist, dim=1)  # (B,M)
+    idx2 = layers.argmin(pc_dist, dim=1)
+
+    return dist1, idx1, dist2, idx2
 
 def cfloat(input_tensor):
     """
@@ -218,11 +220,10 @@ def compute_vote_loss(end_points):
                                                3])  # from B,num_seed,3*GT_VOTE_FACTOR to B*num_seed,GT_VOTE_FACTOR,3
     # A predicted vote to no where is not penalized as long as there is a good vote near the GT vote.
     dist1, _, dist2, _ = nn_distance(vote_xyz_reshape, seed_gt_votes_reshape, l1=True)
-    votes_dist, _ = layers.reduce_min(dist2, dim=1)  # (B*num_seed,vote_factor) to (B*num_seed,)
+    votes_dist = layers.reduce_min(dist2, dim=1)  # (B*num_seed,vote_factor) to (B*num_seed,)
     votes_dist = layers.reshape(votes_dist, shape=[batch_size, num_seed])
     vote_loss = layers.reduce_sum(votes_dist * cfloat(seed_gt_votes_mask)) / (layers.reduce_sum(cfloat(seed_gt_votes_mask)) + 1e-6)
     return vote_loss
-
 
 def compute_objectness_loss(end_points):
     """ Compute objectness loss for the proposals.
@@ -249,18 +250,18 @@ def compute_objectness_loss(end_points):
     # objectness_label: 1 if pred object center is within NEAR_THRESHOLD of any GT object
     # objectness_mask: 0 if pred object center is in gray zone (DONOTCARE), 1 otherwise
     euclidean_dist1 = layers.sqrt(dist1 + 1e-6)
-    objectness_label = layers.zeros(shape=(B, K), dtype='int64', force_cpu=False)
-    objectness_mask = layers.zeros(shape=(B, K), force_cpu=False)
+    objectness_label = layers.zeros(shape=(B, K), dtype='int64')
+    objectness_mask = layers.zeros(shape=(B, K), dtype='float32')
     objectness_label[euclidean_dist1 < NEAR_THRESHOLD] = 1
     objectness_mask[euclidean_dist1 < NEAR_THRESHOLD] = 1
     objectness_mask[euclidean_dist1 > FAR_THRESHOLD] = 1
 
     # Compute objectness loss
-    # TODO: CrossEntropyLoss
     objectness_scores = end_points['objectness_scores']
 
     objectness_scores_T = layers.transpose(objectness_scores, perm=[0, 2, 1]) # TODO: Check if transpose is required
 
+    # CrossEntropyLoss
     objectness_loss = weighted_softmax_cross_entropy_loss(
         inputs=objectness_scores_T,
         targets=objectness_label,
@@ -273,7 +274,6 @@ def compute_objectness_loss(end_points):
     object_assignment = ind1  # (B,K) with values in 0,1,...,K2-1
 
     return objectness_loss, objectness_label, objectness_mask, object_assignment
-
 
 def compute_box_and_sem_cls_loss(end_points, config):
     """ Compute 3D bounding box and semantic classification loss.
@@ -304,74 +304,37 @@ def compute_box_and_sem_cls_loss(end_points, config):
     dist1, ind1, dist2, _ = nn_distance(pred_center, gt_center)  # dist1: BxK, dist2: BxK2
     box_label_mask = end_points['box_label_mask']
     objectness_label = cfloat(end_points['objectness_label'])
-    centroid_reg_loss1 = \
-        layers.reduce_sum(dist1 * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
-    centroid_reg_loss2 = \
-        layers.reduce_sum(dist2 * box_label_mask) / (layers.reduce_sum(box_label_mask) + 1e-6)
+    centroid_reg_loss1 = layers.reduce_sum(dist1 * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
+    centroid_reg_loss2 = layers.reduce_sum(dist2 * box_label_mask) / (layers.reduce_sum(box_label_mask) + 1e-6)
     center_loss = centroid_reg_loss1 + centroid_reg_loss2
 
     # Compute heading loss
     heading_class_label = gather_dim1(end_points['heading_class_label'], object_assignment)  # select (B,K) from (B,K2)
-
-
-    # TODO: CrossEntropyLoss
-    criterion_heading_class = nn.CrossEntropyLoss(reduction='none')
-    heading_class_loss = criterion_heading_class(end_points['heading_scores'].transpose(2, 1),
-                                                 heading_class_label)  # (B,K)
-
-
+    heading_score_t = layers.transpose(end_points['heading_scores'], perm=[0, 2, 1]) # TODO: Check if transpose is necessary or not
+    heading_class_loss = layers.softmax_with_cross_entropy(heading_score_t, heading_class_label) # (B,K)
     heading_class_loss = layers.reduce_sum(heading_class_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
     heading_residual_label = gather_dim1(end_points['heading_residual_label'], object_assignment)  # select (B,K) from (B,K2)
-
     heading_residual_normalized_label = heading_residual_label / (np.pi / num_heading_bin)
 
-
-    # TODO: convert to one-hot encoding
-    # Ref: https://discuss.pytorch.org/t/convert-int-into-one-hot-format/507/3
-    heading_label_one_hot = torch.cuda.FloatTensor(batch_size, heading_class_label.shape[1], num_heading_bin).zero_()
-    heading_label_one_hot.scatter_(2, heading_class_label.unsqueeze(-1),
-                                   1)  # src==1 so it's *one-hot* (B,K,num_heading_bin)
-
-    heading_residual_normalized_loss = huber_loss(
-        layers.reduce_sum(end_points['heading_residuals_normalized'] * heading_label_one_hot,
-                  -1) - heading_residual_normalized_label, delta=1.0)  # (B,K)
-
-    heading_residual_normalized_loss = layers.reduce_sum(heading_residual_normalized_loss * objectness_label) / (
-                layers.reduce_sum(objectness_label) + 1e-6)
+    # convert to one-hot encoding
+    heading_label_one_hot = fluid.one_hot(heading_class_label, depth=num_heading_bin)
+    heading_residual_normalized_loss = huber_loss(layers.reduce_sum(end_points['heading_residuals_normalized'] * heading_label_one_hot, -1) - heading_residual_normalized_label, delta=1.0)  # (B,K)
+    heading_residual_normalized_loss = layers.reduce_sum(heading_residual_normalized_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
     # Compute size loss
     size_class_label = gather_dim1(end_points['size_class_label'], object_assignment)  # select (B,K) from (B,K2)
-
-
-    # TODO: CrossEntropyLoss
-    criterion_size_class = nn.CrossEntropyLoss(reduction='none')
-    size_scores_T = layers.transpose(end_points['size_scores'], perm=[0, 2, 1])
-    size_class_loss = criterion_size_class(size_scores_T, size_class_label)  # (B,K)
-
-
-
+    size_scores_T = layers.transpose(end_points['size_scores'], perm=[0, 2, 1]) # TODO: Check if transpose is required
+    size_class_loss = layers.softmax_with_cross_entropy(size_scores_T, size_class_label)  # (B,K)
     size_class_loss = layers.reduce_sum(size_class_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
-    object_assignment_unsqueeze_reshape = layers.expand(layers.unsqueeze(object_assignment, axes=-1),
-                                                              expand_times=[1, 1, 3])
-    size_residual_label = gather_dim1(end_points['size_residual_label'],
-                                      object_assignment_unsqueeze_reshape) # select (B,K,3) from (B,K2,3)
+    object_assignment_ex = layers.expand(layers.unsqueeze(object_assignment, axes=-1), expand_times=[1, 1, 3])
+    size_residual_label = gather_dim1(end_points['size_residual_label'], object_assignment_ex) # select (B,K,3) from (B,K2,3)
+    size_label_one_hot = fluid.one_hot(size_class_label, depth=num_size_cluster)   # convert to one-hot encoding
+    size_label_one_hot_tiled = layers.expand(layers.unsqueeze(size_label_one_hot, axes=-1), expand_times=[1, 1, 1, 3]) # (B,K,num_size_cluster,3)
+    predicted_size_residual_normalized = layers.reduce_sum(end_points['size_residuals_normalized'] * size_label_one_hot_tiled, 2)  # (B,K,3)
 
-
-    # TODO: convert to one-hot encoding
-    size_label_one_hot = torch.cuda.FloatTensor(batch_size, size_class_label.shape[1], num_size_cluster).zero_()
-    size_label_one_hot.scatter_(2, layers.unsqueeze(size_class_label, axes=-1), 1)  # src==1 so it's *one-hot* (B,K,num_size_cluster)
-
-    size_label_one_hot_tiled = layers.expand(layers.unsqueeze(size_label_one_hot, axes=-1),
-                                                   expand_times=[1, 1, 1, 3]) # (B,K,num_size_cluster,3)
-
-    predicted_size_residual_normalized = layers.reduce_sum(end_points['size_residuals_normalized'] * size_label_one_hot_tiled,
-                                                   2)  # (B,K,3)
-
-    mean_size_arr_expanded = fluid.create_lod_tensor(layers.cast(mean_size_arr, dtype='float32'), place=fluid.CUDAPlace(0))
-    mean_size_arr_expanded = layers.unsqueeze(layers.unsqueeze(mean_size_arr_expanded, axes=0), axes=0) # (1,1,num_size_cluster,3)
-
+    mean_size_arr_expanded = layers.unsqueeze(layers.unsqueeze(mean_size_arr, axes=0), axes=0) # (1,1,num_size_cluster,3)
     mean_size_label = layers.reduce_sum(size_label_one_hot_tiled * mean_size_arr_expanded, dim=2)  # (B,K,3)
     size_residual_label_normalized = size_residual_label / mean_size_label  # (B,K,3)
     size_residual_normalized_loss = layers.reduce_mean(
@@ -382,11 +345,9 @@ def compute_box_and_sem_cls_loss(end_points, config):
 
     # 3.4 Semantic cls loss
     sem_cls_label = gather_dim1(end_points['sem_cls_label'], object_assignment)  # select (B,K) from (B,K2)
-
-    # TODO: CrossEntropyLoss
-    criterion_sem_cls = nn.CrossEntropyLoss(reduction='none')
-    sem_cls_loss = criterion_sem_cls(end_points['sem_cls_scores'].transpose(2, 1), sem_cls_label)  # (B,K)
-
+    # criterion_sem_cls = nn.CrossEntropyLoss(reduction='none')
+    sem_cls_scores = layers.transpose(end_points['sem_cls_scores'], perm=[0, 2, 1])
+    sem_cls_loss = layers.softmax_with_cross_entropy(sem_cls_scores, sem_cls_label)  # (B,K)
     sem_cls_loss = layers.reduce_sum(sem_cls_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
     return center_loss, heading_class_loss, heading_residual_normalized_loss, size_class_loss, size_residual_normalized_loss, sem_cls_loss
@@ -434,10 +395,8 @@ def get_loss(end_points, config):
     end_points['objectness_mask'] = objectness_mask
     end_points['object_assignment'] = object_assignment
     total_num_proposal = objectness_label.shape[0] * objectness_label.shape[1]
-    end_points['pos_ratio'] = \
-        layers.reduce_sum(cfloat(objectness_label)) / float(total_num_proposal)
-    end_points['neg_ratio'] = \
-        layers.reduce_sum(cfloat(objectness_mask)) / float(total_num_proposal) - end_points['pos_ratio']
+    end_points['pos_ratio'] = layers.reduce_sum(cfloat(objectness_label)) / float(total_num_proposal)
+    end_points['neg_ratio'] = layers.reduce_sum(cfloat(objectness_mask)) / float(total_num_proposal) - end_points['pos_ratio']
 
     # Box loss and sem cls loss
     center_loss, heading_cls_loss, heading_reg_loss, size_cls_loss, size_reg_loss, sem_cls_loss = \
@@ -465,8 +424,7 @@ def get_loss(end_points, config):
 
     return loss, end_points
 
-
 if __name__ == '__main__':
     # demo_nn_distance()
-
+    # test_paddle_max()
     pass
