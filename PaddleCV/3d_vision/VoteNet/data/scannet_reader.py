@@ -21,8 +21,6 @@ import os
 import os.path as osp
 import signal
 import numpy as np
-import h5py
-import random
 import pickle
 import logging
 import glob
@@ -35,9 +33,34 @@ __all__ = ["ScannetDetectionReader", "ScannetReader", "ScannetWholeSceneReader"]
 
 logger = logging.getLogger(__name__)
 
-# TODO: Scannet 3D Detection dataset preprocesser and reader 
+# TODO: Scannet 3D Detection dataset preprocesser and reader
 class ScannetDetectionReader(object):
     def __init__(self, data_dir, mean_size_arr_path, mode='train'):
+
+        self.data_dir = data_dir
+        self.mean_size_arr_path = mean_size_arr_path
+        self.mode = mode
+
+    def preprocess(self, with_color=True, with_height=True, with_normal=False, mode='all'):
+        """Preprocess the original ScanNetV2 dataset
+        :param with_color (bool): whether include the color channel as additional features
+        :param with_height (bool): whether include the height channel as an additional feature channel
+        :param with_normal (bool): TODO: implement this feature.
+        :return:
+        """
+
+        meta_data_path = ''
+
+        # Read-in the necessary files
+
+
+        pass
+
+    def load(self):
+
+        # Load mean_size_arr
+        self.mean_size_arr = np.load(self.mean_size_arr_path)['arr_0']
+
         pass
 
     def get_reader(self):
@@ -47,7 +70,6 @@ class ScannetDetectionReader(object):
             pass
 
         return reader
-
 
 
 class ScannetReader(object):

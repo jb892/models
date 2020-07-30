@@ -1,0 +1,11 @@
+{
+    "dataset_name": "scannetv2",
+    "scans_dir": "scans",
+    "sample_file_path": ["meta_data/scannetv2_train.txt", "meta_data/scannetv2_test.txt", "meta_data/scannetv2_val.txt"],
+    "label_map_file_path": "meta_data/scannetv2-labels.combined.tsv",
+    "object_class_ids": "3,4,5,6,7,8,9,10,11,12,14,16,24,28,33,34,36,39",
+    "do_not_care_class_ids": "",
+    "max_num_point": "50000",
+    "output_dir": "./scannet_train_detection_data",
+    "export_bbox": "True"
+}
