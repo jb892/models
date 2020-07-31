@@ -49,8 +49,8 @@ def parse_args():
     parser.add_argument(
         '--batch_size',
         type=int,
-        default=16,
-        help='training batch size, default 16')
+        default=1,
+        help='training batch size, default 8')
     parser.add_argument(
         '--num_points',
         type=int,
@@ -117,7 +117,8 @@ def parse_args():
         help='Do NOT use height signal in input.')
     parser.add_argument(
         '--use_color',
-        action='store_true',
+        type=bool,
+        default=True,
         help='Use RGB color in input.')
     parser.add_argument(
         '--bn_momentum',
@@ -199,8 +200,8 @@ def train():
         framework.default_startup_program().random_seed = SEED
 
     # Build train model
-    startup = fluid.program()
-    train_prog = fluid.program()
+    startup = fluid.Program()
+    train_prog = fluid.Program()
 
     NUM_INPUT_FEATURE_CHANNEL = int(args.use_color) * 3 + int(not args.no_height) * 1
 
@@ -217,7 +218,14 @@ def train():
                 sampling=args.cluster_sampling
             )
 
+            train_model.build_input()
+
+            print("Hi1")
+
             train_model.build()
+
+            print("Hi1")
+
             train_feeds = train_model.get_feeds()
             train_outputs = train_model.get_outputs()
             train_loader = train_model.get_loader()
@@ -254,10 +262,16 @@ def train():
                 vote_factor=args.vote_factor,
                 sampling=args.cluster_sampling
             )
+
+            test_model.build_input()
             test_model.build()
+            print("Hi1")
             test_feeds = test_model.get_feeds()
+            print("Hi2")
             test_outputs = test_model.get_outputs()
+            print("Hi3")
             test_loader = test_model.get_loader()
+            print("Hi4")
     test_prog = test_prog.clone(True)
     test_keys, test_values = parse_outputs(test_outputs)
 
@@ -289,10 +303,12 @@ def train():
         fluid.save(prog, path)
 
     # Get reader
+    # print("Hi111"*10)
     scannet_reader_tr = ScannetDetectionReader(args.data_dir, args.mean_size_arr_path, mode='train')
     scannet_reader_te = ScannetDetectionReader(args.data_dir, args.mean_size_arr_path, mode='test')
-    train_reader = scannet_reader_tr.get_reader(args.batch_size, args.num_points)
-    test_reader = scannet_reader_te.get_reader(args.batch_size, args.num_points)
+    # print("Hi-"*10)
+    train_reader = scannet_reader_tr.get_reader(args.batch_size)
+    test_reader = scannet_reader_te.get_reader(args.batch_size)
     train_loader.set_sample_list_generator(train_reader, place)
     test_loader.set_sample_list_generator(test_reader, place)
 

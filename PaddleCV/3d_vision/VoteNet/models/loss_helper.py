@@ -71,14 +71,14 @@ def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_avera
 
     return loss
 
-def gather_dim1(val_tensor, inds_tensor):
+def gather_dim1(val_tensor, inds_tensor): # TODO: Fix gather op dim=1 error!
     """Apply gather operation to dim=1
 
     :param val_tensor: input tensor
     :param inds_tensor: idx list
     :return:
     """
-    assert len(val_tensor) == len(inds_tensor) # input tensor and inds tensor must have the same length
+    assert val_tensor.shape[0] == inds_tensor.shape[0] # input tensor and inds tensor must have the same length
 
     tmp = []
     for idx, val in enumerate(val_tensor):
@@ -200,6 +200,9 @@ def compute_vote_loss(end_points):
     num_seed = end_points['seed_xyz'].shape[1]  # B,num_seed,3
     vote_xyz = end_points['vote_xyz']  # B,num_seed*vote_factor,3
     seed_inds = layers.cast(end_points['seed_inds'], dtype='int64')  # B,num_seed in [0,num_points-1]
+
+    logger.info('seed_inds.shape = {}'.format(seed_inds.shape))
+    logger.info('vote_label_mask.shape = {}'.format(end_points['vote_label_mask'].shape))
 
     # Get groundtruth votes for the seed points
     # vote_label_mask: Use gather to select B,num_seed from B,num_point
@@ -385,6 +388,7 @@ def get_loss(end_points, config):
 
     # Vote loss
     vote_loss = compute_vote_loss(end_points)
+    print("Bug here>??")
     end_points['vote_loss'] = vote_loss
 
     # Obj loss

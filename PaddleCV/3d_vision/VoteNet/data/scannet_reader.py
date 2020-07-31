@@ -75,7 +75,16 @@ class ScannetDetectionReader(object):
         use_color = self.use_color
         use_height = self.use_height
         num_points = self.num_points
+        augment = self.augment
         mean_size_arr = np.load(MEAN_SIZE_ARR_PATH)['arr_0']
+
+        logger.info("batch_size: {}".format(batch_size))
+        logger.info("num_points: {}".format(num_points))
+        logger.info("scan_names: {}".format(scan_names))
+        logger.info("data_path: {}".format(data_path))
+        logger.info("use_color: {}".format(use_color))
+        logger.info("use_height: {}".format(use_height))
+        logger.info("augment: {}".format(augment))
 
         def reader():
             """
@@ -95,6 +104,8 @@ class ScannetDetectionReader(object):
                 pcl_color: unused
             """
             batch_out = []
+
+            print("Hello world!")
 
             for scan_name in scan_names:
                 mesh_vertices = np.load(os.path.join(data_path, scan_name) + '_vert.npy')
@@ -133,7 +144,7 @@ class ScannetDetectionReader(object):
                 target_bboxes[0:instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
 
                 # ------------------------------- DATA AUGMENTATION ------------------------------
-                if self.augment:
+                if augment:
                     if np.random.random() > 0.5:
                         # Flipping along the YZ plane
                         point_cloud[:, 0] = -1 * point_cloud[:, 0]
@@ -156,8 +167,8 @@ class ScannetDetectionReader(object):
                 # pc instance_labels (it had been filtered
                 # in the data preparation step) we'll compute the instance bbox
                 # from the points sharing the same instance label.
-                point_votes = np.zeros([self.num_points, 3])
-                point_votes_mask = np.zeros(self.num_points)
+                point_votes = np.zeros([num_points, 3])
+                point_votes_mask = np.zeros(num_points)
                 for i_instance in np.unique(instance_labels):
                     # find all points belong to that instance
                     ind = np.where(instance_labels == i_instance)[0]
@@ -175,24 +186,46 @@ class ScannetDetectionReader(object):
                 size_residuals[0:instance_bboxes.shape[0], :] = \
                     target_bboxes[0:instance_bboxes.shape[0], 3:6] - mean_size_arr[class_ind, :]
 
-                ret_dict = {}
-                ret_dict['point_clouds'] = point_cloud.astype(np.float32)
-                ret_dict['center_label'] = target_bboxes.astype(np.float32)[:, 0:3]
-                ret_dict['heading_class_label'] = angle_classes.astype(np.int64)
-                ret_dict['heading_residual_label'] = angle_residuals.astype(np.float32)
-                ret_dict['size_class_label'] = size_classes.astype(np.int64)
-                ret_dict['size_residual_label'] = size_residuals.astype(np.float32)
+                # ret_dict = {}
+                point_cloud = point_cloud.astype(np.float32)
+                center_label = target_bboxes.astype(np.float32)[:, 0:3]
+                heading_class_label = angle_classes.astype(np.int64)
+                heading_residual_label = angle_residuals.astype(np.float32)
+                size_class_label = size_classes.astype(np.int64)
+                size_residual_label = size_residuals.astype(np.float32)
                 target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
                 target_bboxes_semcls[0:instance_bboxes.shape[0]] = \
                     [nyu40id2class[x] for x in instance_bboxes[:, -1][0:instance_bboxes.shape[0]]]
-                ret_dict['sem_cls_label'] = target_bboxes_semcls.astype(np.int64)
-                ret_dict['box_label_mask'] = target_bboxes_mask.astype(np.float32)
-                ret_dict['vote_label'] = point_votes.astype(np.float32)
-                ret_dict['vote_label_mask'] = point_votes_mask.astype(np.int64)
-                # ret_dict['scan_idx'] = np.array(idx).astype(np.int64)
-                ret_dict['pcl_color'] = pcl_color
+                sem_cls_label = target_bboxes_semcls.astype(np.int64)
+                box_label_mask = target_bboxes_mask.astype(np.float32)
+                vote_label = point_votes.astype(np.float32)
+                vote_label_mask = point_votes_mask.astype(np.int64)
+                # scan_idx = np.array(idx).astype(np.int64)
+                pcl_color = pcl_color
 
-                batch_out.append((point_cloud, features, mean_size_arr)) # TODO: The label should be checked!
+                print('point_cloud.shape: ', point_cloud.shape)
+                print('features.shape: ', features.shape)
+                print('center_label.shape: ', center_label.shape)
+                print('heading_class_label.shape: ', heading_class_label.shape)
+                print('heading_residual_label.shape: ', heading_residual_label.shape)
+                print('size_class_label.shape: ', size_class_label.shape)
+                print('size_residual_label.shape: ', size_residual_label.shape)
+                print('sem_cls_label.shape: ', sem_cls_label.shape)
+                print('vote_label.shape: ', vote_label.shape)
+                print('vote_label_mask.shape: ', vote_label_mask.shape)
+                print('mean_size_arr.shape: ', mean_size_arr.shape)
+
+                batch_out.append((point_cloud,
+                                  features,
+                                  center_label,
+                                  heading_class_label,
+                                  heading_residual_label,
+                                  size_class_label,
+                                  size_residual_label,
+                                  sem_cls_label,
+                                  vote_label,
+                                  vote_label_mask,
+                                  mean_size_arr))
 
                 if len(batch_out) == batch_size:
                     yield batch_out
@@ -616,13 +649,13 @@ def rotate_aligned_boxes(input_boxes, rot_mat):
 
     return np.concatenate([new_centers, new_lengths], axis=1)
 
-# def _term_reader(signum, frame):
-#     logger.info('pid {} terminated, terminate reader process '
-#                 'group {}...'.format(os.getpid(), os.getpgrp()))
-#     os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)
-#
-# signal.signal(signal.SIGINT, _term_reader)
-# signal.signal(signal.SIGTERM, _term_reader)
+def _term_reader(signum, frame):
+    logger.info('pid {} terminated, terminate reader process '
+                'group {}...'.format(os.getpid(), os.getpgrp()))
+    os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)
+
+signal.signal(signal.SIGINT, _term_reader)
+signal.signal(signal.SIGTERM, _term_reader)
 
 if __name__ == '__main__':
     # export_eval_whole_scene(16, 8192)
