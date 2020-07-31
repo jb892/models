@@ -25,9 +25,19 @@ import pickle
 import logging
 import glob
 from plyfile import PlyData, PlyElement
+# Mesh IO
+import trimesh
+import matplotlib.pyplot as pyplot
 
 import paddle.fluid as fluid
 import paddle.fluid.framework as framework
+
+MAX_NUM_OBJ = 64
+MEAN_COLOR_RGB = np.array([109.8, 97.2, 83.8])
+nyu40ids = np.array([3,4,5,6,7,8,9,10,11,12,14,16,24,28,33,34,36,39])
+nyu40id2class = {nyu40id: i for i,nyu40id in enumerate(list(nyu40ids))}
+SCANNET_DIR = '../dataset/scannet'
+MEAN_SIZE_ARR_PATH = os.path.join(SCANNET_DIR, 'meta_data/scannet_means.npz')
 
 __all__ = ["ScannetDetectionReader", "ScannetReader", "ScannetWholeSceneReader"]
 
@@ -35,42 +45,159 @@ logger = logging.getLogger(__name__)
 
 # TODO: Scannet 3D Detection dataset preprocesser and reader
 class ScannetDetectionReader(object):
-    def __init__(self, data_dir, mean_size_arr_path, mode='train'):
-
-        self.data_dir = data_dir
-        self.mean_size_arr_path = mean_size_arr_path
+    def __init__(self, num_points=20000, use_color=False, use_height=True, augment=False, mode='train'):
+        self.num_points = num_points
+        self.use_color = use_color
+        self.use_height = use_height
+        self.augment = augment
         self.mode = mode
+        self.data_path = os.path.join(SCANNET_DIR, 'scannet_train_detection_data')
+        all_scan_names = list(set([os.path.basename(x)[0:12] for x in os.listdir(self.data_path) if x.startswith('scene')]))
 
-    def preprocess(self, with_color=True, with_height=True, with_normal=False, mode='all'):
-        """Preprocess the original ScanNetV2 dataset
-        :param with_color (bool): whether include the color channel as additional features
-        :param with_height (bool): whether include the height channel as an additional feature channel
-        :param with_normal (bool): TODO: implement this feature.
-        :return:
-        """
+        if mode=='all':
+            self.scan_names = all_scan_names
+        elif mode in ['train', 'val', 'test']:
+            split_filenames = os.path.join(SCANNET_DIR, 'meta_data/scannetv2_{}.txt'.format(mode))
+            with open(split_filenames, 'r') as f:
+                self.scan_names = f.read().splitlines()
+            # remove unavailiable scans
+            num_scans = len(self.scan_names)
+            self.scan_names = [sname for sname in self.scan_names if sname in all_scan_names]
+            logger.info('kept {} scans out of {}'.format(len(self.scan_names), num_scans))
+        else:
+            logger.error('illegal mode name')
+            exit(-1)
 
-        meta_data_path = ''
-
-        # Read-in the necessary files
-
-
-        pass
-
-    def load(self):
-
-        # Load mean_size_arr
-        self.mean_size_arr = np.load(self.mean_size_arr_path)['arr_0']
-
-        pass
-
-    def get_reader(self):
+    def get_reader(self, batch_size):
+        # num_scans = len(self.scan_names)
+        scan_names = self.scan_names
+        data_path = self.data_path
+        use_color = self.use_color
+        use_height = self.use_height
+        num_points = self.num_points
+        mean_size_arr = np.load(MEAN_SIZE_ARR_PATH)['arr_0']
 
         def reader():
+            """
+            Returns a dict with following keys:
+                point_clouds: (N,3)
+                features: (N, C) RGB+Height
+                center_label: (MAX_NUM_OBJ,3) for GT box center XYZ
+                sem_cls_label: (MAX_NUM_OBJ,) semantic class index
+                angle_class_label: (MAX_NUM_OBJ,) with int values in 0,...,NUM_HEADING_BIN-1
+                angle_residual_label: (MAX_NUM_OBJ,)
+                size_classe_label: (MAX_NUM_OBJ,) with int values in 0,...,NUM_SIZE_CLUSTER
+                size_residual_label: (MAX_NUM_OBJ,3)
+                box_label_mask: (MAX_NUM_OBJ) as 0/1 with 1 indicating a unique box
+                point_votes: (N,3) with votes XYZ
+                point_votes_mask: (N,) with 0/1 with 1 indicating the point is in one of the object's OBB.
+                scan_idx: int scan index in scan_names list
+                pcl_color: unused
+            """
+            batch_out = []
 
-            pass
+            for scan_name in scan_names:
+                mesh_vertices = np.load(os.path.join(data_path, scan_name) + '_vert.npy')
+                instance_labels = np.load(os.path.join(data_path, scan_name) + '_ins_label.npy')
+                semantic_labels = np.load(os.path.join(data_path, scan_name) + '_sem_label.npy')
+                instance_bboxes = np.load(os.path.join(data_path, scan_name) + '_bbox.npy')
 
+                if not use_color:
+                    point_cloud = mesh_vertices[:, 0:3]  # do not use color for now
+                    pcl_color = (mesh_vertices[:, 3:6] - MEAN_COLOR_RGB) / 256.0
+                else:
+                    point_cloud = mesh_vertices[:, 0:6]
+                    point_cloud[:, 3:] = (point_cloud[:, 3:] - MEAN_COLOR_RGB) / 256.0
+
+                if use_height:
+                    floor_height = np.percentile(point_cloud[:, 2], 0.99)
+                    height = point_cloud[:, 2] - floor_height
+                    # point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)], 1)
+                    features = np.concatenate([pcl_color, np.expand_dims(height, 1)], -1)
+
+                    # ------------------------------- LABELS ------------------------------
+                target_bboxes = np.zeros((MAX_NUM_OBJ, 6))
+                target_bboxes_mask = np.zeros((MAX_NUM_OBJ))
+                angle_classes = np.zeros((MAX_NUM_OBJ,))
+                angle_residuals = np.zeros((MAX_NUM_OBJ,))
+                size_classes = np.zeros((MAX_NUM_OBJ,))
+                size_residuals = np.zeros((MAX_NUM_OBJ, 3))
+
+                point_cloud, choices = random_sampling(point_cloud, num_points, return_choices=True)
+                instance_labels = instance_labels[choices]
+                semantic_labels = semantic_labels[choices]
+
+                pcl_color = pcl_color[choices]
+
+                target_bboxes_mask[0:instance_bboxes.shape[0]] = 1
+                target_bboxes[0:instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
+
+                # ------------------------------- DATA AUGMENTATION ------------------------------
+                if self.augment:
+                    if np.random.random() > 0.5:
+                        # Flipping along the YZ plane
+                        point_cloud[:, 0] = -1 * point_cloud[:, 0]
+                        target_bboxes[:, 0] = -1 * target_bboxes[:, 0]
+
+                    if np.random.random() > 0.5:
+                        # Flipping along the XZ plane
+                        point_cloud[:, 1] = -1 * point_cloud[:, 1]
+                        target_bboxes[:, 1] = -1 * target_bboxes[:, 1]
+
+                        # Rotation along up-axis/Z-axis
+                    rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
+                    rot_mat = rotz(rot_angle)
+                    point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
+                    target_bboxes = rotate_aligned_boxes(target_bboxes, rot_mat)
+
+                # compute votes *AFTER* augmentation
+                # generate votes
+                # Note: since there's no map between bbox instance labels and
+                # pc instance_labels (it had been filtered
+                # in the data preparation step) we'll compute the instance bbox
+                # from the points sharing the same instance label.
+                point_votes = np.zeros([self.num_points, 3])
+                point_votes_mask = np.zeros(self.num_points)
+                for i_instance in np.unique(instance_labels):
+                    # find all points belong to that instance
+                    ind = np.where(instance_labels == i_instance)[0]
+                    # find the semantic label
+                    if semantic_labels[ind[0]] in nyu40ids:
+                        x = point_cloud[ind, :3]
+                        center = 0.5 * (x.min(0) + x.max(0))
+                        point_votes[ind, :] = center - x
+                        point_votes_mask[ind] = 1.0
+                point_votes = np.tile(point_votes, (1, 3))  # make 3 votes identical
+
+                class_ind = [np.where(nyu40ids == x)[0][0] for x in instance_bboxes[:, -1]]
+                # NOTE: set size class as semantic class. Consider use size2class.
+                size_classes[0:instance_bboxes.shape[0]] = class_ind
+                size_residuals[0:instance_bboxes.shape[0], :] = \
+                    target_bboxes[0:instance_bboxes.shape[0], 3:6] - mean_size_arr[class_ind, :]
+
+                ret_dict = {}
+                ret_dict['point_clouds'] = point_cloud.astype(np.float32)
+                ret_dict['center_label'] = target_bboxes.astype(np.float32)[:, 0:3]
+                ret_dict['heading_class_label'] = angle_classes.astype(np.int64)
+                ret_dict['heading_residual_label'] = angle_residuals.astype(np.float32)
+                ret_dict['size_class_label'] = size_classes.astype(np.int64)
+                ret_dict['size_residual_label'] = size_residuals.astype(np.float32)
+                target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
+                target_bboxes_semcls[0:instance_bboxes.shape[0]] = \
+                    [nyu40id2class[x] for x in instance_bboxes[:, -1][0:instance_bboxes.shape[0]]]
+                ret_dict['sem_cls_label'] = target_bboxes_semcls.astype(np.int64)
+                ret_dict['box_label_mask'] = target_bboxes_mask.astype(np.float32)
+                ret_dict['vote_label'] = point_votes.astype(np.float32)
+                ret_dict['vote_label_mask'] = point_votes_mask.astype(np.int64)
+                # ret_dict['scan_idx'] = np.array(idx).astype(np.int64)
+                ret_dict['pcl_color'] = pcl_color
+
+                batch_out.append((point_cloud, features, mean_size_arr)) # TODO: The label should be checked!
+
+                if len(batch_out) == batch_size:
+                    yield batch_out
+                    batch_out = []
         return reader
-
 
 class ScannetReader(object):
     def __init__(self, data_dir, mean_size_arr_path, mode='train'):
@@ -335,17 +462,174 @@ def test_pickle_and_save_npy():
     load_pickle_and_save_npy(pickle_datapath, mode)
 
 
-def _term_reader(signum, frame):
-    logger.info('pid {} terminated, terminate reader process '
-                'group {}...'.format(os.getpid(), os.getpgrp()))
-    os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)
+############# Visualizaion ########
 
-signal.signal(signal.SIGINT, _term_reader)
-signal.signal(signal.SIGTERM, _term_reader)
+def viz_votes(pc, point_votes, point_votes_mask, name=''):
+    """ Visualize point votes and point votes mask labels
+    pc: (N,3 or 6), point_votes: (N,9), point_votes_mask: (N,)
+    """
+    inds = (point_votes_mask == 1)
+    pc_obj = pc[inds, 0:3]
+    pc_obj_voted1 = pc_obj + point_votes[inds, 0:3]
+    write_ply(pc_obj, 'pc_obj{}.ply'.format(name))
+    write_ply(pc_obj_voted1, 'pc_obj_voted1{}.ply'.format(name))
+
+
+def viz_obb(pc, label, mask, angle_classes, angle_residuals,
+            size_classes, size_residuals, name=''):
+    """ Visualize oriented bounding box ground truth
+    pc: (N,3)
+    label: (K,3)  K == MAX_NUM_OBJ
+    mask: (K,)
+    angle_classes: (K,)
+    angle_residuals: (K,)
+    size_classes: (K,)
+    size_residuals: (K,3)
+    """
+    oriented_boxes = []
+    K = label.shape[0]
+    for i in range(K):
+        if mask[i] == 0: continue
+        obb = np.zeros(7)
+        obb[0:3] = label[i, 0:3]
+        heading_angle = 0  # hard code to 0
+        mean_size_arr = np.load(MEAN_SIZE_ARR_PATH)['arr_0']
+        box_size = mean_size_arr[size_classes[i], :] + size_residuals[i, :]
+        obb[3:6] = box_size
+        obb[6] = -1 * heading_angle
+        print(obb)
+        oriented_boxes.append(obb)
+    write_oriented_bbox(oriented_boxes, 'gt_obbs{}.ply'.format(name))
+    write_ply(label[mask == 1, :], 'gt_centroids{}.ply'.format(name))
+
+def write_oriented_bbox(scene_bbox, out_filename):
+    """Export oriented (around Z axis) scene bbox to meshes
+    Args:
+        scene_bbox: (N x 7 numpy array): xyz pos of center and 3 lengths (dx,dy,dz)
+            and heading angle around Z axis.
+            Y forward, X right, Z upward. heading angle of positive X is 0,
+            heading angle of positive Y is 90 degrees.
+        out_filename: (string) filename
+    """
+
+    def heading2rotmat(heading_angle):
+        pass
+        rotmat = np.zeros((3, 3))
+        rotmat[2, 2] = 1
+        cosval = np.cos(heading_angle)
+        sinval = np.sin(heading_angle)
+        rotmat[0:2, 0:2] = np.array([[cosval, -sinval], [sinval, cosval]])
+        return rotmat
+
+    def convert_oriented_box_to_trimesh_fmt(box):
+        ctr = box[:3]
+        lengths = box[3:6]
+        trns = np.eye(4)
+        trns[0:3, 3] = ctr
+        trns[3, 3] = 1.0
+        trns[0:3, 0:3] = heading2rotmat(box[6])
+        box_trimesh_fmt = trimesh.creation.box(lengths, trns)
+        return box_trimesh_fmt
+
+    scene = trimesh.scene.Scene()
+    for box in scene_bbox:
+        scene.add_geometry(convert_oriented_box_to_trimesh_fmt(box))
+
+    mesh_list = trimesh.util.concatenate(scene.dump())
+    # save to ply file
+    trimesh.io.export.export_mesh(mesh_list, out_filename, file_type='ply')
+
+    return
+
+def write_ply(points, filename, text=True):
+    """ input: Nx3, write points to filename as PLY format. """
+    points = [(points[i, 0], points[i, 1], points[i, 2]) for i in range(points.shape[0])]
+    vertex = np.array(points, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+    el = PlyElement.describe(vertex, 'vertex', comments=['vertices'])
+    PlyData([el], text=text).write(filename)
+
+
+def write_ply_color(points, labels, filename, num_classes=None, colormap=pyplot.cm.jet):
+    """ Color (N,3) points with labels (N) within range 0 ~ num_classes-1 as OBJ file """
+    labels = labels.astype(int)
+    N = points.shape[0]
+    if num_classes is None:
+        num_classes = np.max(labels) + 1
+    else:
+        assert (num_classes > np.max(labels))
+
+    vertex = []
+    # colors = [pyplot.cm.jet(i/float(num_classes)) for i in range(num_classes)]
+    colors = [colormap(i / float(num_classes)) for i in range(num_classes)]
+    for i in range(N):
+        c = colors[labels[i]]
+        c = [int(x * 255) for x in c]
+        vertex.append((points[i, 0], points[i, 1], points[i, 2], c[0], c[1], c[2]))
+    vertex = np.array(vertex,
+                      dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+
+    el = PlyElement.describe(vertex, 'vertex', comments=['vertices'])
+    PlyData([el], text=True).write(filename)
+
+# ----------------------------------------
+# Point Cloud Sampling
+# ----------------------------------------
+
+def random_sampling(pc, num_sample, replace=None, return_choices=False):
+    """ Input is NxC, output is num_samplexC
+    """
+    if replace is None: replace = (pc.shape[0]<num_sample)
+    choices = np.random.choice(pc.shape[0], num_sample, replace=replace)
+    if return_choices:
+        return pc[choices], choices
+    else:
+        return pc[choices]
+
+def rotz(t):
+    """Rotation about the z-axis."""
+    c = np.cos(t)
+    s = np.sin(t)
+    return np.array([[c, -s,  0],
+                     [s,  c,  0],
+                     [0,  0,  1]])
+
+
+def rotate_aligned_boxes(input_boxes, rot_mat):
+    centers, lengths = input_boxes[:, 0:3], input_boxes[:, 3:6]
+    new_centers = np.dot(centers, np.transpose(rot_mat))
+
+    dx, dy = lengths[:, 0] / 2.0, lengths[:, 1] / 2.0
+    new_x = np.zeros((dx.shape[0], 4))
+    new_y = np.zeros((dx.shape[0], 4))
+
+    for i, crnr in enumerate([(-1, -1), (1, -1), (1, 1), (-1, 1)]):
+        crnrs = np.zeros((dx.shape[0], 3))
+        crnrs[:, 0] = crnr[0] * dx
+        crnrs[:, 1] = crnr[1] * dy
+        crnrs = np.dot(crnrs, np.transpose(rot_mat))
+        new_x[:, i] = crnrs[:, 0]
+        new_y[:, i] = crnrs[:, 1]
+
+    new_dx = 2.0 * np.max(new_x, 1)
+    new_dy = 2.0 * np.max(new_y, 1)
+    new_lengths = np.stack((new_dx, new_dy, lengths[:, 2]), axis=1)
+
+    return np.concatenate([new_centers, new_lengths], axis=1)
+
+# def _term_reader(signum, frame):
+#     logger.info('pid {} terminated, terminate reader process '
+#                 'group {}...'.format(os.getpid(), os.getpgrp()))
+#     os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)
+#
+# signal.signal(signal.SIGINT, _term_reader)
+# signal.signal(signal.SIGTERM, _term_reader)
 
 if __name__ == '__main__':
     # export_eval_whole_scene(16, 8192)
     # r = ScannetReader('/home/jake/Documents/paddle/pointnet2_paddle/data', 'train')
     # m_r = r.get_reader(8, 8192)
 
-    test_pickle_and_save_npy()
+    # test_pickle_and_save_npy()
+    reader = ScannetDetectionReader()
+
+    pass
