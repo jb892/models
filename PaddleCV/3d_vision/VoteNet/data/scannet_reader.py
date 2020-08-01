@@ -43,7 +43,6 @@ __all__ = ["ScannetDetectionReader", "ScannetReader", "ScannetWholeSceneReader"]
 
 logger = logging.getLogger(__name__)
 
-# TODO: Scannet 3D Detection dataset preprocesser and reader
 class ScannetDetectionReader(object):
     def __init__(self, num_points=20000, use_color=False, use_height=True, augment=False, mode='train'):
         self.num_points = num_points

@@ -71,7 +71,7 @@ def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_avera
 
     return loss
 
-def gather_dim1(val_tensor, inds_tensor): # TODO: Fix gather op dim=1 error!
+def gather_dim1(val_tensor, inds_tensor, batch_size=8):
     """Apply gather operation to dim=1
 
     :param val_tensor: input tensor
@@ -81,10 +81,9 @@ def gather_dim1(val_tensor, inds_tensor): # TODO: Fix gather op dim=1 error!
     assert val_tensor.shape[0] == inds_tensor.shape[0] # input tensor and inds tensor must have the same length
 
     tmp = []
-    for idx, val in enumerate(val_tensor):
-        tmp.append(layers.gather(input=val, index=inds_tensor[idx]))
-    out_tensor = (layers.concat(input=tmp))
-
+    for i in range(batch_size):
+        tmp.append(layers.gather(val_tensor[i], inds_tensor[i]))
+    out_tensor = (layers.concat(tmp))
     return out_tensor
 
 def test_paddle_max():
@@ -196,7 +195,10 @@ def compute_vote_loss(end_points):
     """
 
     # Load ground truth votes and assign them to seed points
-    batch_size = end_points['seed_xyz'].shape[0]
+    batch_size = end_points['center_label'].shape[0]
+
+    logger.info('batch_size from center_label.shape = {}'.format(batch_size))
+
     num_seed = end_points['seed_xyz'].shape[1]  # B,num_seed,3
     vote_xyz = end_points['vote_xyz']  # B,num_seed*vote_factor,3
     seed_inds = layers.cast(end_points['seed_inds'], dtype='int64')  # B,num_seed in [0,num_points-1]
@@ -209,11 +211,11 @@ def compute_vote_loss(end_points):
     #   non-object point has no GT vote mask = 0, object point has mask = 1
     # vote_label: Use gather to select B,num_seed,9 from B,num_point,9
     #   with inds in shape B,num_seed,9 and 9 = GT_VOTE_FACTOR * 3
-    seed_gt_votes_mask = gather_dim1(end_points['vote_label_mask'], seed_inds)
+    seed_gt_votes_mask = gather_dim1(end_points['vote_label_mask'], seed_inds, batch_size)
 
     seed_inds_expand = layers.expand(layers.reshape(seed_inds, shape=[batch_size, num_seed, 1]), expand_times=[1, 1, 3 * GT_VOTE_FACTOR])
 
-    seed_gt_votes = gather_dim1(end_points['vote_label'], seed_inds_expand)
+    seed_gt_votes = gather_dim1(end_points['vote_label'], seed_inds_expand, batch_size)  # TODO: Gather op not working and need to be fixed.
     seed_gt_votes += layers.expand(end_points['seed_xyz'], expand_times=[1, 1, 3])
 
     # Compute the min of min of distance
@@ -228,7 +230,7 @@ def compute_vote_loss(end_points):
     vote_loss = layers.reduce_sum(votes_dist * cfloat(seed_gt_votes_mask)) / (layers.reduce_sum(cfloat(seed_gt_votes_mask)) + 1e-6)
     return vote_loss
 
-def compute_objectness_loss(end_points):
+def compute_objectness_loss(end_points, config=None):
     """ Compute objectness loss for the proposals.
 
     Args:
@@ -262,7 +264,7 @@ def compute_objectness_loss(end_points):
     # Compute objectness loss
     objectness_scores = end_points['objectness_scores']
 
-    objectness_scores_T = layers.transpose(objectness_scores, perm=[0, 2, 1]) # TODO: Check if transpose is required
+    objectness_scores_T = layers.transpose(objectness_scores, perm=[0, 2, 1])
 
     # CrossEntropyLoss
     objectness_loss = weighted_softmax_cross_entropy_loss(
@@ -299,7 +301,7 @@ def compute_box_and_sem_cls_loss(end_points, config):
     mean_size_arr = config['mean_size_arr']
 
     object_assignment = end_points['object_assignment']
-    batch_size = object_assignment.shape[0]
+    batch_size = end_points['center_label'].shape[0]  # object_assignment.shape[0]
 
     # Compute center loss
     pred_center = end_points['center']
@@ -312,12 +314,12 @@ def compute_box_and_sem_cls_loss(end_points, config):
     center_loss = centroid_reg_loss1 + centroid_reg_loss2
 
     # Compute heading loss
-    heading_class_label = gather_dim1(end_points['heading_class_label'], object_assignment)  # select (B,K) from (B,K2)
+    heading_class_label = gather_dim1(end_points['heading_class_label'], object_assignment, batch_size)  # select (B,K) from (B,K2)
     heading_score_t = layers.transpose(end_points['heading_scores'], perm=[0, 2, 1]) # TODO: Check if transpose is necessary or not
     heading_class_loss = layers.softmax_with_cross_entropy(heading_score_t, heading_class_label) # (B,K)
     heading_class_loss = layers.reduce_sum(heading_class_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
-    heading_residual_label = gather_dim1(end_points['heading_residual_label'], object_assignment)  # select (B,K) from (B,K2)
+    heading_residual_label = gather_dim1(end_points['heading_residual_label'], object_assignment, batch_size)  # select (B,K) from (B,K2)
     heading_residual_normalized_label = heading_residual_label / (np.pi / num_heading_bin)
 
     # convert to one-hot encoding
@@ -326,13 +328,13 @@ def compute_box_and_sem_cls_loss(end_points, config):
     heading_residual_normalized_loss = layers.reduce_sum(heading_residual_normalized_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
     # Compute size loss
-    size_class_label = gather_dim1(end_points['size_class_label'], object_assignment)  # select (B,K) from (B,K2)
+    size_class_label = gather_dim1(end_points['size_class_label'], object_assignment, batch_size)  # select (B,K) from (B,K2)
     size_scores_T = layers.transpose(end_points['size_scores'], perm=[0, 2, 1]) # TODO: Check if transpose is required
     size_class_loss = layers.softmax_with_cross_entropy(size_scores_T, size_class_label)  # (B,K)
     size_class_loss = layers.reduce_sum(size_class_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
     object_assignment_ex = layers.expand(layers.unsqueeze(object_assignment, axes=-1), expand_times=[1, 1, 3])
-    size_residual_label = gather_dim1(end_points['size_residual_label'], object_assignment_ex) # select (B,K,3) from (B,K2,3)
+    size_residual_label = gather_dim1(end_points['size_residual_label'], object_assignment_ex, batch_size) # select (B,K,3) from (B,K2,3) # TODO: Gather op not working and need to be fixed.
     size_label_one_hot = fluid.one_hot(size_class_label, depth=num_size_cluster)   # convert to one-hot encoding
     size_label_one_hot_tiled = layers.expand(layers.unsqueeze(size_label_one_hot, axes=-1), expand_times=[1, 1, 1, 3]) # (B,K,num_size_cluster,3)
     predicted_size_residual_normalized = layers.reduce_sum(end_points['size_residuals_normalized'] * size_label_one_hot_tiled, 2)  # (B,K,3)
@@ -347,7 +349,7 @@ def compute_box_and_sem_cls_loss(end_points, config):
                 layers.reduce_sum(objectness_label) + 1e-6)
 
     # 3.4 Semantic cls loss
-    sem_cls_label = gather_dim1(end_points['sem_cls_label'], object_assignment)  # select (B,K) from (B,K2)
+    sem_cls_label = gather_dim1(end_points['sem_cls_label'], object_assignment, batch_size)  # select (B,K) from (B,K2)
     # criterion_sem_cls = nn.CrossEntropyLoss(reduction='none')
     sem_cls_scores = layers.transpose(end_points['sem_cls_scores'], perm=[0, 2, 1])
     sem_cls_loss = layers.softmax_with_cross_entropy(sem_cls_scores, sem_cls_label)  # (B,K)
@@ -393,7 +395,7 @@ def get_loss(end_points, config):
 
     # Obj loss
     objectness_loss, objectness_label, objectness_mask, object_assignment = \
-        compute_objectness_loss(end_points)
+        compute_objectness_loss(end_points, config)
     end_points['objectness_loss'] = objectness_loss
     end_points['objectness_label'] = objectness_label
     end_points['objectness_mask'] = objectness_mask

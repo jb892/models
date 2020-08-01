@@ -216,31 +216,37 @@ def test_paddle_tensor():
     print(out)
 
 def test_gather_op():
-    gpu = fluid.CUDAPlace(0)
-    x = fluid.data(name='x', shape=(5, 3), dtype='float32')
-    idx = fluid.data(name='idx', shape=(2), dtype='int64')
+    BATCH_SIZE = 2
 
-    x_val = np.random.rand(5, 3)
-    idx_val = np.random.randint(5, size=(2)).astype(np.int64)
+    gpu = fluid.CUDAPlace(0)
+    x = fluid.data(name='x', shape=(None, 2, 3), dtype='float32')
+    idx = fluid.data(name='idx', shape=(None, 10, 3), dtype='int64')
+
+    x_val = np.random.rand(BATCH_SIZE, 2, 3).astype(np.float32)
+    idx_val = np.random.randint(2, size=[BATCH_SIZE, 10, 3]).astype(np.int64)
 
     print(x_val)
-
     print(idx_val)
 
-    result = layers.gather(x, idx)
+    # x = layers.transpose(x, perm=[1, 2, 0])
 
+    tmp = []
+    for i in range(BATCH_SIZE):
+        tmp.append(layers.gather(x[i], idx[i]))
+    result = layers.concat(tmp, axis=0)
+
+    # result = layers.gather(x, idx)
     exe = fluid.Executor(gpu)
     exe.run(fluid.default_startup_program())
 
     out = exe.run(
-        feed={'x': x, 'idx': idx},
+        feed={'x': x_val, 'idx': idx_val},
         fetch_list=[result]
     )
 
     print(out)
 
 if __name__=='__main__':
-    # TODO: test pointnet2 functions
     # test_paddle_ops()
     # test_paddle_mat_op()
     # test_paddle_tensor()

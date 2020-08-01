@@ -789,7 +789,7 @@ class VoteNet(object):
             Number of votes generated from each seed point.
     """
     def __init__(self, num_class, num_points, num_heading_bin, num_size_cluster,
-                 input_feature_dim=4, num_proposal=128, vote_factor=1, sampling='vote_fps'):
+                 input_feature_dim=4, num_proposal=128, vote_factor=1, sampling='vote_fps', batch_size=1):
         self.num_class = num_class
         self.num_points = num_points
         self.num_heading_bin = num_heading_bin
@@ -798,6 +798,7 @@ class VoteNet(object):
         self.num_proposal = num_proposal
         self.vote_factor = vote_factor
         self.sampling = sampling
+        self.batch_size = batch_size
 
         # init Pointnet2Backbone
         self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim)
@@ -896,7 +897,8 @@ class VoteNet(object):
             'num_heading_bin': self.num_heading_bin,
             'num_size_cluster': self.num_size_cluster,
             'num_class': self.num_class,
-            'mean_size_arr': self.mean_size_arr
+            'mean_size_arr': self.mean_size_arr,
+            'batch_size': self.batch_size
         }
 
         # Put labels into the end_points dict

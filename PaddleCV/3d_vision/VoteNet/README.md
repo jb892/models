@@ -1,7 +1,6 @@
 # VoteNet 3D物体检测模型[施工中...]
 
 <p align="center">
-
 <img src="image/teaser.jpg" height=300 width=800 hspace='10'/>
 
 </p>
@@ -15,19 +14,19 @@
 
 ## TODOs
 
-- [ ] VoteNet backbone改写paddle（2天）
+- [x] VoteNet backbone改写paddle（2天）
   - [x] PointNet Backbone module
   - [x] Voting module
   - [x] Proposal module
-  - [ ] VoteNet
-- [ ] ScanNet数据集处理代码改写paddle（1天）
-  - [ ] 原始数据集预处理script
-  - [ ] ScanNet reader script
+  - [x] VoteNet
+- [x] ScanNet数据集处理代码改写paddle（1天）
+  - [x] 原始数据集预处理script
+  - [x] ScanNet reader script
 - [ ] 改写训练部分代码和调试（2天）
 
 ## 简介
 
-[VoteNet](https://arxiv.org/abs/1904.09664v2)是Charles R. Qi, Or Litany, Kaiming He, Leonidas J. Guibas等人提出的，针对3D数据进行物体检测的模型。该模型基于PointNet++进行了扩展，首先借助PointNet++对一个`N x 3`的原始点云进行特征提取（3代表xyz三个通道），得到输出形状为`M x (3 + C)`的种子点(**seed points**)子集( M < N )，C是每个点的特征通道，之后将每一个点独立的输入投票网络(**voting module**)，回归出每个种子点的“投票” $(dx, dy, dz)$，即物体可能存在的中心点$O_{center} = (x+dx, y+dy, z+dz)$，最终把这些投票聚类之后输入(**Proposal Module**)得到物体的bbox框
+[VoteNet](https://arxiv.org/abs/1904.09664v2)是Charles R. Qi, Or Litany, Kaiming He, Leonidas J. Guibas等人提出的，针对3D数据进行物体检测的模型。该模型基于PointNet++进行了扩展，首先借助PointNet++对一个`N x 3`的原始点云进行特征提取（3代表xyz三个通道），得到输出形状为`M x (3 + C)`的种子点(**seed points**)子集( M < N )，C是每个点的特征通道，之后将每一个点独立的输入投票网络(**voting module**)，回归出每个种子点的“投票” ![](http://latex.codecogs.com/gif.latex?(dx, dy, dz))，即物体可能存在的中心点![](http://latex.codecogs.com/gif.latex?O_{center} = (x+dx, y+dy, z+dz))，最终把这些投票聚类之后输入(**Proposal Module**)得到物体的bbox框
 
 <p align="center">
 <img src="image/votenet_arch.png" height=300 width=800 hspace='10'/> <br />

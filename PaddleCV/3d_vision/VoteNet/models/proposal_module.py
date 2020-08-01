@@ -138,6 +138,4 @@ class ProposalModule(object):
         return end_points
 
 if __name__=='__main__':
-    # TODO: test proposalModule
-
     pass

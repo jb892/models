@@ -215,7 +215,8 @@ def train():
                 num_proposal=args.num_target,
                 input_feature_dim=NUM_INPUT_FEATURE_CHANNEL,
                 vote_factor=args.vote_factor,
-                sampling=args.cluster_sampling
+                sampling=args.cluster_sampling,
+                batch_size=args.batch_size
             )
 
             train_model.build_input()
@@ -260,7 +261,8 @@ def train():
                 num_proposal=args.num_target,
                 input_feature_dim=NUM_INPUT_FEATURE_CHANNEL,
                 vote_factor=args.vote_factor,
-                sampling=args.cluster_sampling
+                sampling=args.cluster_sampling,
+                batch_size=args.batch_size
             )
 
             test_model.build_input()
