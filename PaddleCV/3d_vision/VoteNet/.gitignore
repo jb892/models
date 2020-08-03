@@ -1,2 +1,4 @@
 data/*.pickle
 dataset/scannet/scannet_train_detection_data/
+checkpoints_seg/
+

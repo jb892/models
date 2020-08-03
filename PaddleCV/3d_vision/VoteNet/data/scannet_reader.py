@@ -36,7 +36,7 @@ MAX_NUM_OBJ = 64
 MEAN_COLOR_RGB = np.array([109.8, 97.2, 83.8])
 nyu40ids = np.array([3,4,5,6,7,8,9,10,11,12,14,16,24,28,33,34,36,39])
 nyu40id2class = {nyu40id: i for i,nyu40id in enumerate(list(nyu40ids))}
-SCANNET_DIR = '../dataset/scannet'
+SCANNET_DIR = 'dataset/scannet'
 MEAN_SIZE_ARR_PATH = os.path.join(SCANNET_DIR, 'meta_data/scannet_means.npz')
 
 __all__ = ["ScannetDetectionReader", "ScannetReader", "ScannetWholeSceneReader"]
@@ -50,6 +50,7 @@ class ScannetDetectionReader(object):
         self.use_height = use_height
         self.augment = augment
         self.mode = mode
+        print(os.getcwd())
         self.data_path = os.path.join(SCANNET_DIR, 'scannet_train_detection_data')
         all_scan_names = list(set([os.path.basename(x)[0:12] for x in os.listdir(self.data_path) if x.startswith('scene')]))
 
@@ -72,18 +73,21 @@ class ScannetDetectionReader(object):
         scan_names = self.scan_names
         data_path = self.data_path
         use_color = self.use_color
+
+        print('use_color=', use_color)
+
         use_height = self.use_height
         num_points = self.num_points
         augment = self.augment
         mean_size_arr = np.load(MEAN_SIZE_ARR_PATH)['arr_0']
 
-        logger.info("batch_size: {}".format(batch_size))
-        logger.info("num_points: {}".format(num_points))
-        logger.info("scan_names: {}".format(scan_names))
-        logger.info("data_path: {}".format(data_path))
-        logger.info("use_color: {}".format(use_color))
-        logger.info("use_height: {}".format(use_height))
-        logger.info("augment: {}".format(augment))
+        # logger.info("batch_size: {}".format(batch_size))
+        # logger.info("num_points: {}".format(num_points))
+        # logger.info("scan_names: {}".format(scan_names))
+        # logger.info("data_path: {}".format(data_path))
+        # logger.info("use_color: {}".format(use_color))
+        # logger.info("use_height: {}".format(use_height))
+        # logger.info("augment: {}".format(augment))
 
         def reader():
             """
@@ -104,26 +108,43 @@ class ScannetDetectionReader(object):
             """
             batch_out = []
 
-            print("Hello world!")
-
             for scan_name in scan_names:
                 mesh_vertices = np.load(os.path.join(data_path, scan_name) + '_vert.npy')
                 instance_labels = np.load(os.path.join(data_path, scan_name) + '_ins_label.npy')
                 semantic_labels = np.load(os.path.join(data_path, scan_name) + '_sem_label.npy')
                 instance_bboxes = np.load(os.path.join(data_path, scan_name) + '_bbox.npy')
 
-                if not use_color:
-                    point_cloud = mesh_vertices[:, 0:3]  # do not use color for now
+                point_cloud = mesh_vertices[:, 0:3]
+                if use_color:
                     pcl_color = (mesh_vertices[:, 3:6] - MEAN_COLOR_RGB) / 256.0
-                else:
-                    point_cloud = mesh_vertices[:, 0:6]
-                    point_cloud[:, 3:] = (point_cloud[:, 3:] - MEAN_COLOR_RGB) / 256.0
+
+                # if not use_color:
+                #     point_cloud = mesh_vertices[:, 0:3]  # do not use color for now
+                #     pcl_color = (mesh_vertices[:, 3:6] - MEAN_COLOR_RGB) / 256.0
+                # else:
+                #     point_cloud = mesh_vertices[:, 0:6]
+                #     point_cloud[:, 3:] = (point_cloud[:, 3:] - MEAN_COLOR_RGB) / 256.0
+                #     pcl_color = (mesh_vertices[:, 3:6] - MEAN_COLOR_RGB) / 256.0
 
                 if use_height:
                     floor_height = np.percentile(point_cloud[:, 2], 0.99)
-                    height = point_cloud[:, 2] - floor_height
+                    height = np.expand_dims(point_cloud[:, 2] - floor_height, axis=-1)
+
+                    # print('height.shape = {}'.format(height.shape))
+                    # print('pcl_color.shape = {}'.format(pcl_color.shape))
+
                     # point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)], 1)
-                    features = np.concatenate([pcl_color, np.expand_dims(height, 1)], -1)
+
+                if use_color and use_height:
+                    features = np.concatenate([pcl_color, height], axis=-1)
+                elif use_color:
+                    features = pcl_color
+                elif use_height:
+                    features = height
+                else:
+                    features = np.empty()
+
+                    # print('features.shape=', features.shape)
 
                     # ------------------------------- LABELS ------------------------------
                 target_bboxes = np.zeros((MAX_NUM_OBJ, 6))
@@ -137,7 +158,7 @@ class ScannetDetectionReader(object):
                 instance_labels = instance_labels[choices]
                 semantic_labels = semantic_labels[choices]
 
-                pcl_color = pcl_color[choices]
+                features = features[choices]
 
                 target_bboxes_mask[0:instance_bboxes.shape[0]] = 1
                 target_bboxes[0:instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
@@ -157,7 +178,7 @@ class ScannetDetectionReader(object):
                         # Rotation along up-axis/Z-axis
                     rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
                     rot_mat = rotz(rot_angle)
-                    point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
+                    point_cloud = np.dot(point_cloud, np.transpose(rot_mat))
                     target_bboxes = rotate_aligned_boxes(target_bboxes, rot_mat)
 
                 # compute votes *AFTER* augmentation
@@ -173,7 +194,7 @@ class ScannetDetectionReader(object):
                     ind = np.where(instance_labels == i_instance)[0]
                     # find the semantic label
                     if semantic_labels[ind[0]] in nyu40ids:
-                        x = point_cloud[ind, :3]
+                        x = point_cloud[ind, :]
                         center = 0.5 * (x.min(0) + x.max(0))
                         point_votes[ind, :] = center - x
                         point_votes_mask[ind] = 1.0
@@ -200,19 +221,19 @@ class ScannetDetectionReader(object):
                 vote_label = point_votes.astype(np.float32)
                 vote_label_mask = point_votes_mask.astype(np.int64)
                 # scan_idx = np.array(idx).astype(np.int64)
-                pcl_color = pcl_color
+                # pcl_color = pcl_color
 
-                print('point_cloud.shape: ', point_cloud.shape)
-                print('features.shape: ', features.shape)
-                print('center_label.shape: ', center_label.shape)
-                print('heading_class_label.shape: ', heading_class_label.shape)
-                print('heading_residual_label.shape: ', heading_residual_label.shape)
-                print('size_class_label.shape: ', size_class_label.shape)
-                print('size_residual_label.shape: ', size_residual_label.shape)
-                print('sem_cls_label.shape: ', sem_cls_label.shape)
-                print('vote_label.shape: ', vote_label.shape)
-                print('vote_label_mask.shape: ', vote_label_mask.shape)
-                print('mean_size_arr.shape: ', mean_size_arr.shape)
+                # print('point_cloud.shape: ', point_cloud.shape)
+                # print('features.shape: ', features.shape)
+                # print('center_label.shape: ', center_label.shape)
+                # print('heading_class_label.shape: ', heading_class_label.shape)
+                # print('heading_residual_label.shape: ', heading_residual_label.shape)
+                # print('size_class_label.shape: ', size_class_label.shape)
+                # print('size_residual_label.shape: ', size_residual_label.shape)
+                # print('sem_cls_label.shape: ', sem_cls_label.shape)
+                # print('box_label_mask.shape: ', box_label_mask.shape)
+                # print('vote_label.shape: ', vote_label.shape)
+                # print('vote_label_mask.shape: ', vote_label_mask.shape)
 
                 batch_out.append((point_cloud,
                                   features,
@@ -222,9 +243,9 @@ class ScannetDetectionReader(object):
                                   size_class_label,
                                   size_residual_label,
                                   sem_cls_label,
+                                  box_label_mask,
                                   vote_label,
-                                  vote_label_mask,
-                                  mean_size_arr))
+                                  vote_label_mask))
 
                 if len(batch_out) == batch_size:
                     yield batch_out

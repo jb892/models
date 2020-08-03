@@ -29,6 +29,8 @@ import numpy as np
 
 __all__ = ["conv1d"]
 
+logger = logging.getLogger(__name__)
+
 def conv1d(input,
            num_filters,
            filter_size,
@@ -238,197 +240,6 @@ def test_gather_nd_op():
     print('M', y_.shape)
     print('Y', y_)
 
-def test_gather_op4():
-    gpu = fluid.CUDAPlace(0)
-    channel = 3
-
-    x = fluid.data(name='x', shape=(3, 3), dtype='float32')
-    idx = fluid.data(name='idx', shape=[1, 3], dtype='int64')
-    # label = fluid.data(name='label', shape=[3], dtype="int64")
-
-    # label = layers.unsqueeze(label, 0)
-    # label = layers.unsqueeze(label, 0)
-    # label = layers.expand(label, expand_times=[3, 1])
-
-    x = layers.transpose(x, perm=[1, 0])
-    result = layers.gather(x, idx)
-
-    # idx_ = layers.unsqueeze(idx, 0)
-    # idx_ = layers.expand(idx_, expand_times=[3, 1])
-
-    # mask = layers.equal(x=label, y=idx_)
-
-    # result = layers.masked_select(x, mask)
-    # result = x[mask]
-
-    # bool_tensor = layers.zeros(shape=[3, 3], dtype='float32')
-    # bool_tensor[idx] = 1.0
-
-    x_val = np.array([[0.9427, 0.0364, 0.2587],
-                     [0.4433, 0.3639, 0.4383],
-                     [0.5494, 0.4386, 0.2218]]).astype(np.float32)
-
-    idx_val = np.array([[0, 0, 2]]).astype(np.int64)
-
-    # label_val = np.array(range(channel)).astype(np.int64)
-
-    # idx_val = np.expend_dims(idx_val, axis=0)
-
-    print(x_val)
-    print(idx_val)
-
-    exe = fluid.Executor(gpu)
-    exe.run(fluid.default_startup_program())
-
-    out = exe.run(
-        feed={'x': x_val, 'idx': idx_val},
-        fetch_list=[result]
-    )
-
-    print(out)
-
-def test_gather_op_own_forloop():
-    BATCH_SIZE = 2
-
-    gpu = fluid.CUDAPlace(0)
-
-    x = fluid.data(name='x', shape=(None, 3, 3), dtype='float32')
-    idx = fluid.data(name='idx', shape=(None, 5, 3), dtype='int64')
-
-    x_val = np.random.rand(BATCH_SIZE, 3, 3).astype(np.float32)
-    idx_val = np.random.randint(3, size=[BATCH_SIZE, 5, 3]).astype(np.int64)
-
-    print(x_val)
-    print(idx_val)
-
-    # out[i][j][k] = input[i][index[i][j][k]][k]  # if dim == 1
-    for i in range(BATCH_SIZE):
-        for j in range(idx.shape[1]):
-            for k in range(idx.shape[2]):
-                pass
-
-
-
-def test_gather_op_own():
-    BATCH_SIZE = 2
-
-    gpu = fluid.CUDAPlace(0)
-
-    x = fluid.data(name='x', shape=(None, 3, 3), dtype='float32')
-    idx = fluid.data(name='idx', shape=(None, 5, 3), dtype='int64')
-
-    x_val = np.random.rand(BATCH_SIZE, 3, 3).astype(np.float32)
-    idx_val = np.random.randint(3, size=[BATCH_SIZE, 5, 3]).astype(np.int64)
-
-    print(x_val)
-    print(idx_val)
-
-    tmp = []
-    # for i in range(BATCH_SIZE):
-    #     x_T = layers.transpose(x[i], perm=[1, 0])
-    #     print('x_T.shape = {}'.format(x_T.shape))
-    #     print('idx[i].shape = {}'.format(idx[i].shape))
-    #     idx_ = layers.reshape(idx[i], shape=[idx[i].shape[0] * idx[i].shape[1]])
-    #     tmp.append(layers.gather(x_T, idx_))
-    for i in range(BATCH_SIZE):
-        tmp_2 = []
-        print('idx[i].shape[0] = {}'.format(idx[i].shape[0]))
-        print('idx[i].shape = {}'.format(idx[i].shape))
-        print('x[i].shape = {}'.format(x[i].shape))
-        tmp.append(layers.gather(x[i], idx[i][:3, :]))
-
-        # for j in range(idx[i].shape[0]):
-        #     r = layers.gather(x[i], idx[i][j])
-        #     tmp_2.append(r)
-        # tmp_2_concat = layers.concat(tmp_2)
-        # print('tmp_2_concat.shape = {}'.format(tmp_2_concat.shape))
-        # tmp.append(tmp_2_concat)
-    result = layers.concat(tmp, axis=0)
-
-    # result = layers.concat(tmp, axis=0)
-    # result = layers.reshape(result, shape=[BATCH_SIZE, idx.shape[1], idx.shape[2]])
-
-    exe = fluid.Executor(gpu)
-    exe.run(fluid.default_startup_program())
-
-    out = exe.run(
-        feed={'x': x_val, 'idx': idx_val},
-        fetch_list=[result]
-    )
-
-    print(out)
-
-def test_gather_op3():
-    BATCH_SIZE = 2
-
-    gpu = fluid.CUDAPlace(0)
-    x = fluid.data(name='x', shape=(None, 3, 3), dtype='float32')
-    idx = fluid.data(name='idx', shape=(None, 3, 3), dtype='int64')
-
-    x_val = np.random.rand(BATCH_SIZE, 3, 3).astype(np.float32)
-    idx_val = np.random.randint(3, size=[BATCH_SIZE, 3, 3]).astype(np.int64)
-
-    print(x_val)
-    print(idx_val)
-
-    idx_oneslike = layers.cast(layers.ones_like(idx), 'float32')
-    print('idx shape= {}'.format(idx_oneslike.shape))
-
-    x = layers.concat([x, idx_oneslike], axis=0)
-
-    print('shape = {}'.format(x.shape))
-
-    tmp = []
-    for i in range(BATCH_SIZE):
-        # idx_oneslike = layers.cast(layers.ones_like(idx[i]), 'float32')
-        # tmp.append(layers.gather(layers.concat([x[i], idx_oneslike], axis=0), idx[i]))
-        tmp.append(layers.gather(layers.unsqueeze(layers.transpose(x[i], perm=[1, 0]), -1), idx[i][0]))
-    result = layers.concat(tmp)
-    # result = layers.reshape(result, shape=[BATCH_SIZE, idx.shape[1]])
-
-    # result = layers.gather(x, idx)
-
-    exe = fluid.Executor(gpu)
-    exe.run(fluid.default_startup_program())
-
-    out = exe.run(
-        feed={'x': x_val, 'idx': idx_val},
-        fetch_list=[result]
-    )
-
-    print(out)
-
-def test_gather_op2():
-    BATCH_SIZE = 2
-
-    gpu = fluid.CUDAPlace(0)
-    x = fluid.data(name='x', shape=(None, 2), dtype='float32')
-    idx = fluid.data(name='idx', shape=(None, 5), dtype='int64')
-
-    x_val = np.random.rand(BATCH_SIZE, 2).astype(np.float32)
-    idx_val = np.random.randint(2, size=[BATCH_SIZE, 5]).astype(np.int64)
-
-    print(x_val)
-    print(idx_val)
-
-    tmp = []
-    for i in range(BATCH_SIZE):
-        tmp.append(layers.gather(x[i], idx[i]))
-    result = layers.concat(tmp)
-    result = layers.reshape(result, shape=[BATCH_SIZE, idx.shape[1]])
-
-    # result = layers.gather(x, idx)
-
-    exe = fluid.Executor(gpu)
-    exe.run(fluid.default_startup_program())
-
-    out = exe.run(
-        feed={'x': x_val, 'idx': idx_val},
-        fetch_list=[result]
-    )
-
-    print(out)
-
 def test_gather_op():
     BATCH_SIZE = 2
 
@@ -462,14 +273,166 @@ def test_gather_op():
 
     print(out)
 
+def test_item_assignment():
+    # Graph Organizing
+    x = fluid.layers.data(name='x', shape=[2], dtype='float64')
+    y = fluid.layers.data(name='y', shape=[2], dtype='float64')
+    result = fluid.layers.less_than(x=x, y=y)
+    # The comment lists another available method.
+    # result = fluid.layers.fill_constant(shape=[2], dtype='float64', value=0)
+    # fluid.layers.less_than(x=x, y=y, cond=result)
+
+    # Create an executor using CPU as example
+    exe = fluid.Executor(fluid.CPUPlace())
+    exe.run(fluid.default_startup_program())
+
+    # Execute
+    x_i = np.array([[1, 2], [3, 4]]).astype(np.float64)
+    y_i = np.array([[2, 2], [1, 3]]).astype(np.float64)
+    result_value, = exe.run(fluid.default_main_program(), feed={'x': x_i, 'y': y_i}, fetch_list=[result])
+    print(result_value)  # [[True, False], [False, False]]
+
+def test_mat():
+    x = fluid.layers.data(name='x', shape=[2, 2], dtype='float64')
+    # y = fluid.layers.data(name='y', shape=[2], dtype='float64')
+    # result = fluid.layers.less_than(x=x, y=y)
+
+    result = x[x > 0.3]
+
+    # Create an executor using CPU as example
+    exe = fluid.Executor(fluid.CPUPlace())
+    exe.run(fluid.default_startup_program())
+
+    # Execute
+    x_i = np.random.rand(2, 2).astype(np.float64)
+
+    print(x_i)
+
+    # y_i = np.array([[2, 2], [1, 3]]).astype(np.float64)
+    result_value, = exe.run(fluid.default_main_program(), feed={'x': x_i}, fetch_list=[result])
+    print(result_value)  # [[True, False], [False, False]]
+
+def weighted_softmax_cross_entropy_loss(inputs, targets, weight=None, size_average=None, ignore_idx=-100, reduce=None,
+                                        reduction=None):
+    # inputs: [N, d1, Class]
+    # target: [N, d1] a list of class index
+    # weight: [Class]
+    logger.info('inputs.shape = {}'.format(inputs.shape))
+    logger.info('targets.shape = {}'.format(targets.shape))
+    # logger.info('weight.shape = {}'.format(weight.shape))
+
+    assert(inputs.shape[0] == targets.shape[0])
+
+    # lets print the inputs.shape and targets.shape here
+    # logger.info('Weighted_softmax_cross_entropy_loss: inputs.shape={}, targets.shape={}'.format(inputs.shape, targets.shape))
+
+    num_of_class = inputs.shape[-1]
+
+    # Apply log_softmax
+    input_log_sm = -layers.log_softmax(input=inputs, axis=-1)
+
+    # Convert target index list to one-hot encode
+    targets_onehot_mat = fluid.one_hot(targets, depth=num_of_class)
+
+    loss_mat = targets_onehot_mat * input_log_sm
+
+    assert len(weight) == targets_onehot_mat.shape[-1], 'Error: length of weight array is not equal mat channel size.'
+
+    loss_mat_t = layers.transpose(loss_mat, perm=[2, 1, 0])
+    loss_mat_t_0 = layers.unsqueeze(layers.transpose(weight[0] * loss_mat_t[0], perm=[1, 0]), -1)
+    loss_mat_t_1 = layers.unsqueeze(layers.transpose(weight[1] * loss_mat_t[1], perm=[1, 0]), -1)
+    loss_mat = layers.concat([loss_mat_t_0, loss_mat_t_1], axis=-1)
+
+    loss = layers.reduce_sum(loss_mat, dim=-1)
+    return loss
+
+def test_cross_entropy_loss():
+    BATCH_SIZE = 2
+    X_SHAPE = (BATCH_SIZE, 5, 2)
+    Y_SHAPE = (BATCH_SIZE, 5)
+    WEIGHTS = [0.2, 0.8]
+
+    x = fluid.data(name='x', shape=X_SHAPE, dtype='float32')  # pred
+    y = fluid.data(name='y', shape=Y_SHAPE, dtype='int64')  # label
+
+    # x_val = np.random.rand(BATCH_SIZE, 5, 2).astype(np.float32)
+    # y_val = np.random.randint(2, size=[BATCH_SIZE, 5]).astype(np.int64)
+
+    x_val = np.array([[[0.1835, 0.2570],
+                     [0.3595, 0.8258],
+                     [0.8185, 0.8752],
+                     [0.8778, 0.5042],
+                     [0.5456, 0.9268]],
+                    [[0.0696, 0.3445],
+                     [0.4098, 0.1119],
+                     [0.1921, 0.6646],
+                     [0.1789, 0.8803],
+                     [0.9501, 0.3315]]]).astype(np.float32)
+    y_val = np.array([[0, 1, 0, 0, 0],
+                      [1, 1, 1, 0, 1]]).astype(np.int64)
+
+    answer = np.array([[0.1461, 0.3896, 0.1444, 0.1047, 0.1804],
+                       [0.4521, 0.6825, 0.3876, 0.2208, 0.8396]]).astype(np.float32)
+    print(x_val)
+    print(y_val)
+    print(answer)
+
+    result = weighted_softmax_cross_entropy_loss(x, y, WEIGHTS)
+
+    gpu = fluid.CUDAPlace(0)
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'x': x_val, 'y': y_val},
+        fetch_list=[result]
+    )
+
+    print(out)
+
+def test_greaterop():
+    BATCH_SIZE = 2
+    X_SHAPE = (BATCH_SIZE, 3)
+    Y_SHAPE = (BATCH_SIZE, 3)
+    alpha = 0.3
+
+    x = layers.zeros(shape=X_SHAPE, dtype='float32') #fluid.data(name='x', shape=X_SHAPE, dtype='float32')  # pred
+    y = fluid.data(name='y', shape=Y_SHAPE, dtype='float32')  # label
+
+    # x_val = np.random.rand(BATCH_SIZE, 5, 2).astype(np.float32)
+    # y_val = np.random.randint(2, size=[BATCH_SIZE, 5]).astype(np.int64)
+
+    y_val = np.array([[0.1313, 0.1197, 0.2880],
+                    [0.1332, 0.6165, 0.7328]]).astype(np.float32)
+
+    mask = layers.cast(y > alpha, 'int32')
+
+
+    # print(x_val)
+    print(y_val)
+    # print(answer)
+
+    # result = weighted_softmax_cross_entropy_loss(x, y, WEIGHTS)
+
+    gpu = fluid.CUDAPlace(0)
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'y': y_val},
+        fetch_list=[mask]
+    )
+
+    print(out)
+
+
+
 if __name__=='__main__':
     # test_paddle_ops()
     # test_paddle_mat_op()
     # test_paddle_tensor()
     # test_gather_op()
-    test_gather_op2()
-    # test_gather_op3()
-    # test_gather_op4()
-    # test_gather_nd_op()
-    # test_gather_op_own()
-    # test_gather_op_own_forloop()
+    # test_item_assignment()
+    # test_mat()
+    # test_cross_entropy_loss()
+    test_greaterop()
