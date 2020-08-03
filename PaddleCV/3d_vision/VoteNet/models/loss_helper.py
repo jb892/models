@@ -23,6 +23,7 @@ import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 import numpy as np
 import logging
+from .ext_op import *
 
 FAR_THRESHOLD = 0.6
 NEAR_THRESHOLD = 0.3
@@ -83,7 +84,8 @@ def gather_dim1(val_tensor, inds_tensor, batch_size=8):
     tmp = []
     for i in range(batch_size):
         tmp.append(layers.gather(val_tensor[i], inds_tensor[i]))
-    out_tensor = (layers.concat(tmp))
+    out_tensor = layers.concat(tmp, 0)
+    out_tensor = layers.reshape(out_tensor, shape=[batch_size, inds_tensor.shape[1]])
     return out_tensor
 
 def test_paddle_max():
@@ -203,19 +205,23 @@ def compute_vote_loss(end_points):
     vote_xyz = end_points['vote_xyz']  # B,num_seed*vote_factor,3
     seed_inds = layers.cast(end_points['seed_inds'], dtype='int64')  # B,num_seed in [0,num_points-1]
 
-    logger.info('seed_inds.shape = {}'.format(seed_inds.shape))
     logger.info('vote_label_mask.shape = {}'.format(end_points['vote_label_mask'].shape))
+    logger.info('seed_inds.shape = {}'.format(seed_inds.shape))
 
     # Get groundtruth votes for the seed points
     # vote_label_mask: Use gather to select B,num_seed from B,num_point
     #   non-object point has no GT vote mask = 0, object point has mask = 1
     # vote_label: Use gather to select B,num_seed,9 from B,num_point,9
     #   with inds in shape B,num_seed,9 and 9 = GT_VOTE_FACTOR * 3
-    seed_gt_votes_mask = gather_dim1(end_points['vote_label_mask'], seed_inds, batch_size)
+
+    vote_label_mask = layers.squeeze(end_points['vote_label_mask'], [-1])
+    seed_gt_votes_mask = gather_dim1(vote_label_mask, seed_inds, batch_size)
 
     seed_inds_expand = layers.expand(layers.reshape(seed_inds, shape=[batch_size, num_seed, 1]), expand_times=[1, 1, 3 * GT_VOTE_FACTOR])
+    seed_inds_expand = layers.cast(seed_inds_expand, 'int32')
 
-    seed_gt_votes = gather_dim1(end_points['vote_label'], seed_inds_expand, batch_size)  # TODO: Gather op not working and need to be fixed.
+    # seed_gt_votes = gather_dim1(end_points['vote_label'], seed_inds_expand, batch_size)  # TODO: Gather op not working and need to be fixed.
+    seed_gt_votes = gather_dim(input=end_points['vote_label'], index=seed_inds_expand)
     seed_gt_votes += layers.expand(end_points['seed_xyz'], expand_times=[1, 1, 3])
 
     # Compute the min of min of distance
@@ -334,7 +340,9 @@ def compute_box_and_sem_cls_loss(end_points, config):
     size_class_loss = layers.reduce_sum(size_class_loss * objectness_label) / (layers.reduce_sum(objectness_label) + 1e-6)
 
     object_assignment_ex = layers.expand(layers.unsqueeze(object_assignment, axes=-1), expand_times=[1, 1, 3])
-    size_residual_label = gather_dim1(end_points['size_residual_label'], object_assignment_ex, batch_size) # select (B,K,3) from (B,K2,3) # TODO: Gather op not working and need to be fixed.
+    # size_residual_label = gather_dim1(end_points['size_residual_label'], object_assignment_ex, batch_size) # select (B,K,3) from (B,K2,3) # TODO: Gather op not working and need to be fixed.
+    object_assignment_ex = layers.cast(object_assignment_ex, 'int32')
+    size_residual_label = gather_dim(input=end_points['size_residual_label'], index=object_assignment_ex)
     size_label_one_hot = fluid.one_hot(size_class_label, depth=num_size_cluster)   # convert to one-hot encoding
     size_label_one_hot_tiled = layers.expand(layers.unsqueeze(size_label_one_hot, axes=-1), expand_times=[1, 1, 1, 3]) # (B,K,num_size_cluster,3)
     predicted_size_residual_normalized = layers.reduce_sum(end_points['size_residuals_normalized'] * size_label_one_hot_tiled, 2)  # (B,K,3)

@@ -215,6 +215,220 @@ def test_paddle_tensor():
 
     print(out)
 
+def test_gather_nd_op():
+    x = fluid.layers.data(name='x', shape=[4, 3, 3], dtype='float32')
+    index = fluid.layers.data(name='index', shape=[4, 2], dtype='int32')
+    output = fluid.layers.gather_nd(x, index)
+
+    use_gpu = True
+    if use_gpu:
+        place = fluid.CUDAPlace(0)
+    else:
+        place = fluid.CPUPlace()
+
+    exe = fluid.executor.Executor(place=place)
+    exe.run(fluid.default_startup_program())
+    x = np.random.uniform(size=(4, 3, 3)).astype('float32')
+    print("X=", x)
+    # d = np.array([[0, 0], [1, 1], [2, 2], [3, 1]]).astype('int')
+    d = np.random.randint(3, size=[4, 2]).astype(np.int64)
+    print('d=', d)
+
+    [y_] = exe.run(fluid.default_main_program(), feed={'x': x, 'index': d}, fetch_list=[output])
+    print('M', y_.shape)
+    print('Y', y_)
+
+def test_gather_op4():
+    gpu = fluid.CUDAPlace(0)
+    channel = 3
+
+    x = fluid.data(name='x', shape=(3, 3), dtype='float32')
+    idx = fluid.data(name='idx', shape=[1, 3], dtype='int64')
+    # label = fluid.data(name='label', shape=[3], dtype="int64")
+
+    # label = layers.unsqueeze(label, 0)
+    # label = layers.unsqueeze(label, 0)
+    # label = layers.expand(label, expand_times=[3, 1])
+
+    x = layers.transpose(x, perm=[1, 0])
+    result = layers.gather(x, idx)
+
+    # idx_ = layers.unsqueeze(idx, 0)
+    # idx_ = layers.expand(idx_, expand_times=[3, 1])
+
+    # mask = layers.equal(x=label, y=idx_)
+
+    # result = layers.masked_select(x, mask)
+    # result = x[mask]
+
+    # bool_tensor = layers.zeros(shape=[3, 3], dtype='float32')
+    # bool_tensor[idx] = 1.0
+
+    x_val = np.array([[0.9427, 0.0364, 0.2587],
+                     [0.4433, 0.3639, 0.4383],
+                     [0.5494, 0.4386, 0.2218]]).astype(np.float32)
+
+    idx_val = np.array([[0, 0, 2]]).astype(np.int64)
+
+    # label_val = np.array(range(channel)).astype(np.int64)
+
+    # idx_val = np.expend_dims(idx_val, axis=0)
+
+    print(x_val)
+    print(idx_val)
+
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'x': x_val, 'idx': idx_val},
+        fetch_list=[result]
+    )
+
+    print(out)
+
+def test_gather_op_own_forloop():
+    BATCH_SIZE = 2
+
+    gpu = fluid.CUDAPlace(0)
+
+    x = fluid.data(name='x', shape=(None, 3, 3), dtype='float32')
+    idx = fluid.data(name='idx', shape=(None, 5, 3), dtype='int64')
+
+    x_val = np.random.rand(BATCH_SIZE, 3, 3).astype(np.float32)
+    idx_val = np.random.randint(3, size=[BATCH_SIZE, 5, 3]).astype(np.int64)
+
+    print(x_val)
+    print(idx_val)
+
+    # out[i][j][k] = input[i][index[i][j][k]][k]  # if dim == 1
+    for i in range(BATCH_SIZE):
+        for j in range(idx.shape[1]):
+            for k in range(idx.shape[2]):
+                pass
+
+
+
+def test_gather_op_own():
+    BATCH_SIZE = 2
+
+    gpu = fluid.CUDAPlace(0)
+
+    x = fluid.data(name='x', shape=(None, 3, 3), dtype='float32')
+    idx = fluid.data(name='idx', shape=(None, 5, 3), dtype='int64')
+
+    x_val = np.random.rand(BATCH_SIZE, 3, 3).astype(np.float32)
+    idx_val = np.random.randint(3, size=[BATCH_SIZE, 5, 3]).astype(np.int64)
+
+    print(x_val)
+    print(idx_val)
+
+    tmp = []
+    # for i in range(BATCH_SIZE):
+    #     x_T = layers.transpose(x[i], perm=[1, 0])
+    #     print('x_T.shape = {}'.format(x_T.shape))
+    #     print('idx[i].shape = {}'.format(idx[i].shape))
+    #     idx_ = layers.reshape(idx[i], shape=[idx[i].shape[0] * idx[i].shape[1]])
+    #     tmp.append(layers.gather(x_T, idx_))
+    for i in range(BATCH_SIZE):
+        tmp_2 = []
+        print('idx[i].shape[0] = {}'.format(idx[i].shape[0]))
+        print('idx[i].shape = {}'.format(idx[i].shape))
+        print('x[i].shape = {}'.format(x[i].shape))
+        tmp.append(layers.gather(x[i], idx[i][:3, :]))
+
+        # for j in range(idx[i].shape[0]):
+        #     r = layers.gather(x[i], idx[i][j])
+        #     tmp_2.append(r)
+        # tmp_2_concat = layers.concat(tmp_2)
+        # print('tmp_2_concat.shape = {}'.format(tmp_2_concat.shape))
+        # tmp.append(tmp_2_concat)
+    result = layers.concat(tmp, axis=0)
+
+    # result = layers.concat(tmp, axis=0)
+    # result = layers.reshape(result, shape=[BATCH_SIZE, idx.shape[1], idx.shape[2]])
+
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'x': x_val, 'idx': idx_val},
+        fetch_list=[result]
+    )
+
+    print(out)
+
+def test_gather_op3():
+    BATCH_SIZE = 2
+
+    gpu = fluid.CUDAPlace(0)
+    x = fluid.data(name='x', shape=(None, 3, 3), dtype='float32')
+    idx = fluid.data(name='idx', shape=(None, 3, 3), dtype='int64')
+
+    x_val = np.random.rand(BATCH_SIZE, 3, 3).astype(np.float32)
+    idx_val = np.random.randint(3, size=[BATCH_SIZE, 3, 3]).astype(np.int64)
+
+    print(x_val)
+    print(idx_val)
+
+    idx_oneslike = layers.cast(layers.ones_like(idx), 'float32')
+    print('idx shape= {}'.format(idx_oneslike.shape))
+
+    x = layers.concat([x, idx_oneslike], axis=0)
+
+    print('shape = {}'.format(x.shape))
+
+    tmp = []
+    for i in range(BATCH_SIZE):
+        # idx_oneslike = layers.cast(layers.ones_like(idx[i]), 'float32')
+        # tmp.append(layers.gather(layers.concat([x[i], idx_oneslike], axis=0), idx[i]))
+        tmp.append(layers.gather(layers.unsqueeze(layers.transpose(x[i], perm=[1, 0]), -1), idx[i][0]))
+    result = layers.concat(tmp)
+    # result = layers.reshape(result, shape=[BATCH_SIZE, idx.shape[1]])
+
+    # result = layers.gather(x, idx)
+
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'x': x_val, 'idx': idx_val},
+        fetch_list=[result]
+    )
+
+    print(out)
+
+def test_gather_op2():
+    BATCH_SIZE = 2
+
+    gpu = fluid.CUDAPlace(0)
+    x = fluid.data(name='x', shape=(None, 2), dtype='float32')
+    idx = fluid.data(name='idx', shape=(None, 5), dtype='int64')
+
+    x_val = np.random.rand(BATCH_SIZE, 2).astype(np.float32)
+    idx_val = np.random.randint(2, size=[BATCH_SIZE, 5]).astype(np.int64)
+
+    print(x_val)
+    print(idx_val)
+
+    tmp = []
+    for i in range(BATCH_SIZE):
+        tmp.append(layers.gather(x[i], idx[i]))
+    result = layers.concat(tmp)
+    result = layers.reshape(result, shape=[BATCH_SIZE, idx.shape[1]])
+
+    # result = layers.gather(x, idx)
+
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'x': x_val, 'idx': idx_val},
+        fetch_list=[result]
+    )
+
+    print(out)
+
 def test_gather_op():
     BATCH_SIZE = 2
 
@@ -228,14 +442,16 @@ def test_gather_op():
     print(x_val)
     print(idx_val)
 
-    # x = layers.transpose(x, perm=[1, 2, 0])
+    x = layers.transpose(x, perm=[1, 0, 2])
+    idx = layers.transpose(idx, perm=[1, 0, 2])
 
-    tmp = []
-    for i in range(BATCH_SIZE):
-        tmp.append(layers.gather(x[i], idx[i]))
-    result = layers.concat(tmp, axis=0)
+    # tmp = []
+    # for i in range(BATCH_SIZE):
+    #     tmp.append(layers.gather(x[i], idx[i]))
+    # result = layers.concat(tmp, axis=0)
 
-    # result = layers.gather(x, idx)
+    result = layers.gather(x, idx)
+
     exe = fluid.Executor(gpu)
     exe.run(fluid.default_startup_program())
 
@@ -250,4 +466,10 @@ if __name__=='__main__':
     # test_paddle_ops()
     # test_paddle_mat_op()
     # test_paddle_tensor()
-    test_gather_op()
+    # test_gather_op()
+    test_gather_op2()
+    # test_gather_op3()
+    # test_gather_op4()
+    # test_gather_nd_op()
+    # test_gather_op_own()
+    # test_gather_op_own_forloop()
