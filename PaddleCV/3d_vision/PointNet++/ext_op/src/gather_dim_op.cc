@@ -22,15 +22,16 @@ public:
   void InferShape(framework::InferShapeContext* ctx) const override {
     PADDLE_ENFORCE(ctx->HasInput("X"), "Input(X) shoud not be null");
     auto x_dims = ctx->GetInputDim("X");
-    PADDLE_ENFORCE(x_dims.size() == 3 && x_dims[2] == 3,
-                   "Input(X) of GatherDimOp should be 3-D Tensor, the last "
-                   "dimension must be 3");
+    PADDLE_ENFORCE(x_dims.size() == 3, //&& x_dims[2] == 3,
+                   "Input(X) of GatherDimOp should be 3-D Tensor"); //, the last dimension must be 3");
     auto index_dims = ctx->GetInputDim("Index");
-    PADDLE_ENFORCE(index_dims.size() == 3 && index_dims[2] == 3,
-                   "Index of GatherDimOp should be 3-D Tensor, the last dim must be 3");
+    PADDLE_ENFORCE(index_dims.size() == 3, //&& index_dims[2] == 3,
+                   "Index of GatherDimOp should be 3-D Tensor"); //, the last dim must be 3");
     PADDLE_ENFORCE(index_dims[0] == x_dims[0], 
-    		    "Input(X) and Index should have the same batch_size.");
-    ctx->SetOutputDim("Output", {x_dims[0], index_dims[1], 3});
+    		       "Input(X) and Index should have the same batch_size.");
+    PADDLE_ENFORCE(x_dims[2] == index_dims[2],
+                   "The last dim of x and index should be equal.");
+    ctx->SetOutputDim("Output", {x_dims[0], index_dims[1], index_dims[2]});
   }
 
 protected:
@@ -45,11 +46,11 @@ class GatherDimOpMaker : public framework::OpProtoAndCheckerMaker {
 public:
   void Make() override {
     AddInput("X",
-             "Input points with shape (batch, n, 3), n is input "
+             "Input points with shape (batch, n, k), n is input "
              "points's num");
     AddInput("Index",
-             "input index with shape (batch, m, 3), m is output idx's num");
-    AddOutput("Output", "output points with shape(batch, m, 3)");
+             "input index with shape (batch, m, k), m is output idx's num");
+    AddOutput("Output", "output points with shape(batch, m, k)");
     AddComment(
         R"Doc(
         Gather Dim Operator.

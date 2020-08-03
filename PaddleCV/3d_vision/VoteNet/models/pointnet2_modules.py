@@ -843,7 +843,7 @@ class VoteNet(object):
                                               dtype='int64',
                                               lod_level=0)
         self.vote_label = fluid.data(name='vote_label',
-                                        shape=[None, self.num_points, 3],
+                                        shape=[None, self.num_points, 9],
                                         dtype='float32',
                                         lod_level=0)
         self.vote_label_mask = fluid.data(name='vote_label_mask',

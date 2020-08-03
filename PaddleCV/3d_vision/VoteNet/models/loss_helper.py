@@ -175,7 +175,7 @@ def clong(input_tensor):
     """
     return layers.cast(input_tensor, dtype='int64')
 
-def compute_vote_loss(end_points):
+def compute_vote_loss(end_points, config):
     """ Compute vote loss: Match predicted votes to GT votes.
 
     Args:
@@ -197,9 +197,10 @@ def compute_vote_loss(end_points):
     """
 
     # Load ground truth votes and assign them to seed points
-    batch_size = end_points['center_label'].shape[0]
+    # batch_size = end_points['center_label'].shape[0]
+    batch_size = config['batch_size']
 
-    logger.info('batch_size from center_label.shape = {}'.format(batch_size))
+    logger.info('batch_size = {}'.format(batch_size))
 
     num_seed = end_points['seed_xyz'].shape[1]  # B,num_seed,3
     vote_xyz = end_points['vote_xyz']  # B,num_seed*vote_factor,3
@@ -221,6 +222,10 @@ def compute_vote_loss(end_points):
     seed_inds_expand = layers.cast(seed_inds_expand, 'int32')
 
     # seed_gt_votes = gather_dim1(end_points['vote_label'], seed_inds_expand, batch_size)  # TODO: Gather op not working and need to be fixed.
+
+    logger.info('vote_label.shape = {}'.format(end_points['vote_label'].shape))
+    logger.info('seed_inds_expand.shape = {}'.format(seed_inds_expand.shape))
+
     seed_gt_votes = gather_dim(input=end_points['vote_label'], index=seed_inds_expand)
     seed_gt_votes += layers.expand(end_points['seed_xyz'], expand_times=[1, 1, 3])
 
@@ -236,7 +241,7 @@ def compute_vote_loss(end_points):
     vote_loss = layers.reduce_sum(votes_dist * cfloat(seed_gt_votes_mask)) / (layers.reduce_sum(cfloat(seed_gt_votes_mask)) + 1e-6)
     return vote_loss
 
-def compute_objectness_loss(end_points, config=None):
+def compute_objectness_loss(end_points, config):
     """ Compute objectness loss for the proposals.
 
     Args:
@@ -252,7 +257,8 @@ def compute_objectness_loss(end_points, config=None):
     # Associate proposal and GT objects by point-to-point distances
     aggregated_vote_xyz = end_points['aggregated_vote_xyz']
     gt_center = end_points['center_label'][:, :, 0:3]
-    B = gt_center.shape[0]
+    # B = gt_center.shape[0]
+    B = config['batch_size']
     K = aggregated_vote_xyz.shape[1]
     K2 = gt_center.shape[1]
     dist1, ind1, dist2, _ = nn_distance(aggregated_vote_xyz, gt_center)  # dist1: BxK, dist2: BxK2
@@ -307,7 +313,8 @@ def compute_box_and_sem_cls_loss(end_points, config):
     mean_size_arr = config['mean_size_arr']
 
     object_assignment = end_points['object_assignment']
-    batch_size = end_points['center_label'].shape[0]  # object_assignment.shape[0]
+    # batch_size = end_points['center_label'].shape[0]  # object_assignment.shape[0]
+    batch_size = config['batch_size']  # object_assignment.shape[0]
 
     # Compute center loss
     pred_center = end_points['center']
@@ -389,7 +396,8 @@ def get_loss(end_points, config):
                 num_heading_bin,
                 num_size_cluster,
                 num_class,
-                mean_size_arr
+                mean_size_arr,
+                batch_size
             }
     Returns:
         loss: pytorch scalar tensor
@@ -397,7 +405,7 @@ def get_loss(end_points, config):
     """
 
     # Vote loss
-    vote_loss = compute_vote_loss(end_points)
+    vote_loss = compute_vote_loss(end_points, config)
     print("Bug here>??")
     end_points['vote_loss'] = vote_loss
 
