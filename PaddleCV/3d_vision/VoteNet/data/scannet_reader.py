@@ -69,13 +69,9 @@ class ScannetDetectionReader(object):
             exit(-1)
 
     def get_reader(self, batch_size):
-        # num_scans = len(self.scan_names)
         scan_names = self.scan_names
         data_path = self.data_path
         use_color = self.use_color
-
-        print('use_color=', use_color)
-
         use_height = self.use_height
         num_points = self.num_points
         augment = self.augment
@@ -114,26 +110,13 @@ class ScannetDetectionReader(object):
                 semantic_labels = np.load(os.path.join(data_path, scan_name) + '_sem_label.npy')
                 instance_bboxes = np.load(os.path.join(data_path, scan_name) + '_bbox.npy')
 
-                point_cloud = mesh_vertices[:, 0:3]
+                point_cloud = mesh_vertices[:, :3]
                 if use_color:
                     pcl_color = (mesh_vertices[:, 3:6] - MEAN_COLOR_RGB) / 256.0
-
-                # if not use_color:
-                #     point_cloud = mesh_vertices[:, 0:3]  # do not use color for now
-                #     pcl_color = (mesh_vertices[:, 3:6] - MEAN_COLOR_RGB) / 256.0
-                # else:
-                #     point_cloud = mesh_vertices[:, 0:6]
-                #     point_cloud[:, 3:] = (point_cloud[:, 3:] - MEAN_COLOR_RGB) / 256.0
-                #     pcl_color = (mesh_vertices[:, 3:6] - MEAN_COLOR_RGB) / 256.0
 
                 if use_height:
                     floor_height = np.percentile(point_cloud[:, 2], 0.99)
                     height = np.expand_dims(point_cloud[:, 2] - floor_height, axis=-1)
-
-                    # print('height.shape = {}'.format(height.shape))
-                    # print('pcl_color.shape = {}'.format(pcl_color.shape))
-
-                    # point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)], 1)
 
                 if use_color and use_height:
                     features = np.concatenate([pcl_color, height], axis=-1)
@@ -144,9 +127,7 @@ class ScannetDetectionReader(object):
                 else:
                     features = np.empty()
 
-                    # print('features.shape=', features.shape)
-
-                    # ------------------------------- LABELS ------------------------------
+                # ------------------------------- LABELS ------------------------------
                 target_bboxes = np.zeros((MAX_NUM_OBJ, 6))
                 target_bboxes_mask = np.zeros((MAX_NUM_OBJ))
                 angle_classes = np.zeros((MAX_NUM_OBJ,))
@@ -220,8 +201,6 @@ class ScannetDetectionReader(object):
                 box_label_mask = target_bboxes_mask.astype(np.float32)
                 vote_label = point_votes.astype(np.float32)
                 vote_label_mask = point_votes_mask.astype(np.int64)
-                # scan_idx = np.array(idx).astype(np.int64)
-                # pcl_color = pcl_color
 
                 # print('point_cloud.shape: ', point_cloud.shape)
                 # print('features.shape: ', features.shape)

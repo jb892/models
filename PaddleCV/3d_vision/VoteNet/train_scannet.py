@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument(
         '--batch_size',
         type=int,
-        default=8,
+        default=4,
         help='training batch size, default 8')
     parser.add_argument(
         '--num_points',
@@ -129,8 +129,8 @@ def parse_args():
     parser.add_argument(
         '--decay_steps',
         type=int,
-        default=20,
-        help='learning rate and batch norm momentum decay steps, default 20')
+        default=2000,
+        help='learning rate and batch norm momentum decay steps, default 2k')
     parser.add_argument(
         '--weight_decay',
         type=float,
@@ -175,13 +175,18 @@ def parse_args():
     parser.add_argument(
         '--log_interval',
         type=int,
-        default=1,
+        default=100,
         help='mini-batch interval for logging.')
     parser.add_argument(
         '--enable_ce',
         action='store_true',
         help='The flag indicating whether to run the task '
              'for continuous evaluation.')
+    parser.add_argument(
+        '--eval_interval',
+        type=int,
+        default=10,
+        help='mini-batch interval for validation.')
     args = parser.parse_args()
     return args
 
@@ -295,11 +300,9 @@ def train():
         logger.info("Save model to {}".format(path))
         fluid.save(prog, path)
 
-    # Get reader num_points=20000, use_color=False, use_height=True, augment=False, mode='train'
     scannet_reader_tr = ScannetDetectionReader(num_points=args.num_points,
                                                use_color=args.use_color,
                                                use_height=args.use_height,
-                                               # augment=args.augment,
                                                mode='train')
     scannet_reader_te = ScannetDetectionReader(num_points=args.num_points,
                                                use_color=args.use_color,
@@ -345,7 +348,7 @@ def train():
             save_model(exe, train_prog, os.path.join(args.save_dir, str(epoch_id), "votenet_det"))
 
             # evaluation
-            if not args.enable_ce:
+            if not args.enable_ce and epoch_id % args.eval_interval == 0:
                 try:
                     test_loader.start()
                     test_iter = 0

@@ -1,4 +1,4 @@
 data/*.pickle
 dataset/scannet/scannet_train_detection_data/
 checkpoints_seg/
-
+checkpoints_seg_2020_Aug_4/

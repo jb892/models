@@ -278,8 +278,11 @@ def compute_objectness_loss(end_points, config):
     # objectness_mask[euclidean_dist1 > FAR_THRESHOLD] = 1
 
     objectness_label = layers.cast(euclidean_dist1 < NEAR_THRESHOLD, 'int64')
-    objectness_mask = layers.cast(euclidean_dist1 < NEAR_THRESHOLD, dtype='float32')
-    objectness_mask = layers.elementwise_mul(objectness_mask, layers.cast(euclidean_dist1 > FAR_THRESHOLD, dtype='float32'))
+    objectness_mask = euclidean_dist1 < NEAR_THRESHOLD
+    objectness_mask = layers.cast(layers.logical_or(objectness_mask, euclidean_dist1 > FAR_THRESHOLD), 'float32')
+
+    # layers.cast(, dtype='float32'))
+
 
     # Compute objectness loss
     objectness_scores = end_points['objectness_scores']
@@ -455,8 +458,13 @@ def get_loss(end_points, config):
     # --------------------------------------------
     # Some other statistics
     obj_pred_val = layers.argmax(end_points['objectness_scores'], 2)  # B,K
-    obj_acc = cfloat(layers.reduce_sum(layers.cast(obj_pred_val == clong(objectness_label), 'int32')) * objectness_mask) / (
+
+    # logger.info('obj_pred_val.shape=', obj_pred_val.shape)
+    # logger.info('objectness_label.shape=', objectness_label.shape)
+
+    obj_acc = layers.reduce_sum(layers.cast(obj_pred_val == clong(objectness_label), dtype='float32') * objectness_mask) / (
                 layers.reduce_sum(objectness_mask) + 1e-6)
+
     end_points['obj_acc'] = obj_acc
 
     return loss, end_points

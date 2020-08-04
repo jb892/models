@@ -934,7 +934,12 @@ class VoteNet(object):
         return self.loader
 
     def get_outputs(self):
-        return {'loss': self.loss, 'obj_acc': self.end_points['obj_acc']}
+        return {'loss': self.loss, 'obj_acc': self.end_points['obj_acc'], 'box_loss': self.end_points['box_loss'],
+                'center_loss': self.end_points['center_loss'], 'heading_cls_loss': self.end_points['heading_cls_loss'],
+                'heading_reg_loss': self.end_points['heading_reg_loss'], 'neg_ratio': self.end_points['neg_ratio'],
+                'objectness_loss': self.end_points['objectness_loss'], 'pos_ratio': self.end_points['pos_ratio'],
+                'sem_cls_loss': self.end_points['sem_cls_loss'], 'size_cls_loss': self.end_points['size_cls_loss'],
+                'size_reg_loss': self.end_points['size_reg_loss'], 'vote_loss': self.end_points['vote_loss']}
 
 def prepare_input_data(num_points, num_class, input_feature_dim):
 
