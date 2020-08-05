@@ -426,6 +426,34 @@ def test_greaterop():
     print(out)
 
 
+def test_gather_dim2():
+    BATCH_SIZE = 2
+    X_SHAPE = (BATCH_SIZE, 3, 1)
+    Y_SHAPE = (BATCH_SIZE, 3, 1)
+
+    x = fluid.data(name='x', shape=X_SHAPE, dtype='float32')
+    y = layers.zeros(shape=Y_SHAPE, dtype='int64')
+
+    x_val = np.random.rand(BATCH_SIZE, 3, 1).astype(np.float32)
+    # y_val = np.random.randint(2, size=[BATCH_SIZE, 5]).astype(np.int64)
+
+    result = layers.gather(x, y)
+
+    print(x_val)
+    # print(y_val)
+
+    gpu = fluid.CUDAPlace(0)
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'x': x_val},
+        fetch_list=[result]
+    )
+
+    print(out)
+
+
 
 if __name__=='__main__':
     # test_paddle_ops()
@@ -435,4 +463,5 @@ if __name__=='__main__':
     # test_item_assignment()
     # test_mat()
     # test_cross_entropy_loss()
-    test_greaterop()
+    # test_greaterop()
+    test_gather_dim2()

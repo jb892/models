@@ -303,10 +303,12 @@ def train():
     scannet_reader_tr = ScannetDetectionReader(num_points=args.num_points,
                                                use_color=args.use_color,
                                                use_height=args.use_height,
+                                               augment=True,
                                                mode='train')
     scannet_reader_te = ScannetDetectionReader(num_points=args.num_points,
                                                use_color=args.use_color,
                                                use_height=args.use_height,
+                                               augment=False,
                                                mode='val')
     train_reader = scannet_reader_tr.get_reader(args.batch_size)
     test_reader = scannet_reader_te.get_reader(args.batch_size)
