@@ -24,7 +24,7 @@ import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 import numpy as np
 import logging
-from .ext_op import *
+from ext_op import *
 
 FAR_THRESHOLD = 0.6
 NEAR_THRESHOLD = 0.3

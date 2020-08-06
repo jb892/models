@@ -26,9 +26,9 @@ import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
 from paddle.fluid.initializer import Constant, Normal
-from .ext_op import *
-# from ext_op import *
-from .loss_helper import *
+# from .ext_op import *
+from ext_op import *
+from loss_helper import *
 # from utils import conv1d
 
 __all__ = ["PointnetSAModuleVotes", "PointnetFPModule", "VoteNet", "VotingModule", "ProposalModule"]
@@ -49,7 +49,8 @@ class QueryAndGroup(object):
                  ret_grouped_xyz=False,
                  normalize_xyz=False,
                  sample_uniformly=False,
-                 ret_unique_cnt=False):
+                 ret_unique_cnt=False,
+                 end_points=None):
         """
         :param radius (float32): radius of ball
         :param nsample (int32): maximum number of gather features
@@ -68,6 +69,7 @@ class QueryAndGroup(object):
         self.ret_unique_cnt = ret_unique_cnt
         if self.ret_unique_cnt:
             assert(self.sample_uniformly)
+        self.end_points = end_points
 
     def build(self, xyz, new_xyz, features=None):
         """
@@ -139,10 +141,13 @@ class QueryAndGroup(object):
 
             # logger.info('new_features.shape: {}'.format(new_features.shape))
         else:
-            assert(self.use_xyz, "use_xyz should be True when features is None")
-            new_features = grouped_xyz
+            new_features = layers.transpose(grouped_xyz, perm=[0, 2, 3, 1])
 
         grouped_xyz = layers.transpose(grouped_xyz, perm=[0, 2, 3, 1])
+
+        # if self.end_points is not None:
+        #     self.end_points['sa1_new_features'] = new_features
+        #     self.end_points['sa1_group_xyz_norm'] = grouped_xyz
 
         ret = [new_features]
         if self.ret_grouped_xyz:
@@ -296,7 +301,7 @@ def conv_bn(input, out_channels, bn=True, bn_momentum=0.95, act='relu', name=Non
         out = layers.batch_norm(out,
                                   act=act,
                                   momentum=bn_momentum,
-                                  param_attr=ParamAttr(name=bn_name + "_scale"),
+                                  param_attr=ParamAttr(name=bn_name + "_scale", ),
                                   bias_attr=ParamAttr(name=bn_name + "_offset"),
                                   moving_mean_name=bn_name + '_mean',
                                   moving_variance_name=bn_name + '_var')
@@ -325,7 +330,8 @@ def PointnetSAModuleVotes(xyz,
                           sample_uniformly=False,
                           ret_unique_cnt=False,
                           bn_m=0.95,
-                          name=None):
+                          name=None,
+                          end_points=None):
     """
     PointNet MSG(Multi-Scale Group) Set Abstraction Module.
     Call with radiuss, nsamples, mlps as single element list for
@@ -364,7 +370,8 @@ def PointnetSAModuleVotes(xyz,
                                 ret_grouped_xyz=True,
                                 normalize_xyz=normalize_xyz,
                                 sample_uniformly=sample_uniformly,
-                                ret_unique_cnt=ret_unique_cnt)
+                                ret_unique_cnt=ret_unique_cnt,
+                                end_points=end_points)
     else:
         grouper = GroupAll(use_xyz=use_xyz, ret_grouped_xyz=True)
 
@@ -397,12 +404,17 @@ def PointnetSAModuleVotes(xyz,
     # for i, num_out_channel in enumerate(mlp_spec):
     grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_m, name=name+'_mlp')
 
-    new_features = grouped_features # (B, mlp_spec[-1], npoint, nsample)
+    if end_points is not None:
+        end_points['sa1_gf'] = grouped_features
+
+    new_features = grouped_features
+
+    # new_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2]) # (B, mlp_spec[-1], npoint, nsample)
 
     # logger.info('new_features.shape: {}'.format(new_features.shape))
 
     # Pooling
-    if pooling == 'max':
+    if pooling == 'max': # NCHW format
         new_features = layers.pool2d(new_features, pool_size=[1, new_features.shape[3]], pool_type='max')
     elif pooling == 'avg':
         new_features = layers.pool2d(new_features, pool_size=[1, new_features.shape[3]], pool_type='avg')
@@ -416,7 +428,7 @@ def PointnetSAModuleVotes(xyz,
         # new_features: shape = (B, mlp[-1], npoint, 1)
         new_features = layers.reduce_sum(new_features * layers.unsqueeze(rbf, axes=1), dim=-1, keep_dim=True) / float(nsample)
 
-    # logger.info('new_features.shape: {}'.format(new_features.shape))
+    logger.info('new_features.shape: {}'.format(new_features.shape))
 
     new_features = layers.squeeze(new_features, axes=[-1])  # shape=[B, mlp_spec[-1], npoint]
 
@@ -424,6 +436,9 @@ def PointnetSAModuleVotes(xyz,
 
     # Convert new_feature tensor from 'NCW' to 'NWC' format
     new_features = layers.transpose(new_features, perm=[0, 2, 1])
+
+    if end_points is not None:
+        end_points['sa1_module_new_features'] = new_features
 
     # logger.info('new_features.shape: {}'.format(new_features.shape))
 
@@ -453,10 +468,10 @@ def PointnetFPModule(unknown,
     :return new_features: (B, n, mlps[-1]) tensor of the features of the unknown features
     """
 
-    # logger.info('FPModule_{} unknown.shape = {}'.format(name, unknown.shape))
-    # logger.info('FPModule_{} known.shape = {}'.format(name, known.shape))
+    logger.info('FPModule_{} unknown.shape = {}'.format(name, unknown.shape))
+    logger.info('FPModule_{} known.shape = {}'.format(name, known.shape))
     # logger.info('FPModule_{} unknown_feats.shape = {}'.format(name, unknown_feats.shape))
-    # logger.info('FPModule_{} known_feats.shape = {}'.format(name, known_feats.shape))
+    logger.info('FPModule_{} known_feats.shape = {}'.format(name, known_feats.shape))
 
     if known is not None:
         dist, idx = three_nn(unknown, known)  # dist:shape=[B, N, 3], idx:shape=[B, N, 3]
@@ -466,10 +481,14 @@ def PointnetFPModule(unknown,
         norm = layers.reduce_sum(dist_recip, dim=2, keep_dim=True)  # norm:shape=[B, N, 1]
         weight = dist_recip / norm  # weight:shape=[B, N, 3]
         weight.stop_gradient = True
+        logger.info('FPModule_{} weight.shape = {}'.format(name, weight.shape))
         interpolated_feats = three_interp(input=known_feats, weight=weight, idx=idx)  # out_shape=[B, N, C]
     else:
         interpolated_feats = layers.expand(known_feats,
                                            expand_times=[known_feats.shape[0], known_feats.shape[1], unknown.shape[1]])
+
+    logger.info('FPModule_{} interpolated_feats.shape = {}'.format(name, interpolated_feats.shape))
+    logger.info('FPModule_{} unknown_feats.shape = {}'.format(name, unknown_feats.shape))
 
     if unknown_feats is not None:
         new_features = layers.concat([interpolated_feats, unknown_feats], axis=-1)  # shape=(B, N, C2 + C1)
@@ -516,13 +535,18 @@ class Pointnet2Backbone(object):
             mlps=[self.input_feature_dim, 64, 64, 128],
             use_xyz=True,
             normalize_xyz=True,
-            name='sa_layer1'
+            name='sa_layer1',
+            end_points=end_points
         )
 
         # Save SA1 layer output result
         end_points['sa1_inds'] = l1_inds
         end_points['sa1_xyz'] = l1_xyz
         end_points['sa1_features'] = l1_feature
+
+        print('sa1_inds.shape', l1_inds.shape)
+        print('sa1_xyz.shape', l1_xyz.shape)
+        print('sa1_features.shape', l1_feature.shape)
 
         l2_xyz, l2_feature, l2_inds = PointnetSAModuleVotes(
             xyz=l1_xyz,
@@ -535,6 +559,10 @@ class Pointnet2Backbone(object):
             normalize_xyz=True,
             name='sa_layer2'
         )
+
+        print('sa2_inds.shape', l2_inds.shape)
+        print('sa2_xyz.shape', l2_xyz.shape)
+        print('sa2_features.shape', l2_feature.shape)
 
         # Save SA2 layer output result
         end_points['sa2_inds'] = l2_inds
@@ -557,6 +585,9 @@ class Pointnet2Backbone(object):
         end_points['sa3_xyz'] = l3_xyz
         end_points['sa3_features'] = l3_feature
 
+        print('sa3_xyz.shape', l3_xyz.shape)
+        print('sa3_features.shape', l3_feature.shape)
+
         l4_xyz, l4_feature, l4_inds = PointnetSAModuleVotes(
             xyz=l3_xyz,
             features=l3_feature,
@@ -572,6 +603,9 @@ class Pointnet2Backbone(object):
         # Save SA4 layer output result
         end_points['sa4_xyz'] = xyz
         end_points['sa4_features'] = features
+
+        print('sa4_xyz.shape', l4_xyz.shape)
+        print('sa4_features.shape', l4_feature.shape)
 
         # --------- 2 FEATURE UPSAMPLING LAYERS --------
         fp1_feature = PointnetFPModule(unknown=l3_xyz, known=l4_xyz, unknown_feats=l3_feature, known_feats=l4_feature,
@@ -730,8 +764,8 @@ class ProposalModule(object):
         # Convert tensor from 'NCHW' to 'NHWC' format
         net = layers.transpose(net, perm=[0, 2, 1])
 
-        end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster) #,
-                                   # mean_size_arr)
+        end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
+                                   mean_size_arr)
         return end_points
 
 # Checked!
@@ -768,12 +802,67 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
                                 shape=[batch_size, num_proposal, num_size_cluster, 3])  # Bxnum_proposalxnum_size_clusterx3
     end_points['size_scores'] = size_scores
     end_points['size_residuals_normalized'] = size_residuals_normalized
-    mean_size_arr = layers.assign(np.array(MEAN_SIZE_ARR, dtype='float32'))
+    if mean_size_arr is None:
+        mean_size_arr = layers.assign(np.array(MEAN_SIZE_ARR, dtype='float32'))
+    else:
+        mean_size_arr = layers.assign(np.array(mean_size_arr, dtype='float32'))
     end_points['size_residuals'] = size_residuals_normalized * layers.unsqueeze(layers.unsqueeze(mean_size_arr, 0), 0)
 
     sem_cls_scores = net_transposed[:, :, 5 + num_heading_bin * 2 + num_size_cluster * 4:]  # Bxnum_proposalx10
     end_points['sem_cls_scores'] = sem_cls_scores
     return end_points
+
+class testVoteNet(object):
+    def __init__(self, num_class, num_points, num_heading_bin, num_size_cluster,
+                 input_feature_dim=0, num_proposal=128, vote_factor=1, sampling='vote_fps', batch_size=1):
+        self.num_class = num_class
+        self.num_points = num_points
+        self.num_heading_bin = num_heading_bin
+        self.num_size_cluster = num_size_cluster
+        self.input_feature_dim = input_feature_dim
+        self.num_proposal = num_proposal
+        self.vote_factor = vote_factor
+        self.sampling = sampling
+        self.batch_size = batch_size
+
+        # init Pointnet2Backbone
+        self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim)
+
+        # init VotingModule
+        self.vgen = VotingModule(self.vote_factor, 256, name='vgen')
+
+        # init proposal module
+        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, name='pnet')
+
+    def build(self, xyz, mean_size_arr=None):
+        end_points = {}
+
+        # Backbone point feature learning
+        # seed_xyz, seed_features, seed_inds = self.backbone_net(input_xyz, input_feature)
+        end_points = self.backbone_net.build(xyz, end_points=end_points)
+
+        # =========== Hough voting ==========
+        xyz = end_points['fp2_xyz']
+        features = end_points['fp2_features']
+        end_points['seed_xyz'] = xyz
+        end_points['seed_features'] = features
+        end_points['seed_inds'] = end_points['fp2_inds']
+
+        # Convert features tensor from 'NWC' to 'NCW' format
+        features = layers.transpose(features, perm=[0, 2, 1])
+        vote_xyz, vote_features = self.vgen.build(xyz, features)  # vote_features.shape = [B, out_dim, num_vote]
+        features_norm = layers.sqrt(layers.reduce_sum(layers.pow(vote_features, factor=2.0), dim=1, keep_dim=False))
+        vote_features = vote_features / layers.unsqueeze(features_norm, 1)  # features_norm.shape = [B, 1, num_vote]
+        # Convert features tensor from 'NCW' to 'NWC'
+        vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
+
+        end_points['vote_xyz'] = vote_xyz
+        end_points['vote_features'] = vote_features
+
+        # Vote aggregation and detection
+        end_points = self.pnet.build(vote_xyz, vote_features, end_points, mean_size_arr)
+
+        return end_points
 
 class VoteNet(object):
     r"""
@@ -992,14 +1081,123 @@ def test_backbone():
 
     print(outs.shape)
 
+
+# if __name__ == '__main__':
+#     sys.path.append(os.path.join(ROOT_DIR, 'sunrgbd'))
+#     from sunrgbd_detection_dataset import SunrgbdDetectionVotesDataset, DC
+#     from loss_helper import get_loss
+#
+#     # Define model
+#     model = VoteNet(10, 12, 10, np.random.random((10, 3))).cuda()
+#
+#     try:
+#         # Define dataset
+#         TRAIN_DATASET = SunrgbdDetectionVotesDataset('train', num_points=20000, use_v1=True)
+#
+#         # Model forward pass
+#         sample = TRAIN_DATASET[5]
+#         inputs = {'point_clouds': torch.from_numpy(sample['point_clouds']).unsqueeze(0).cuda()}
+#     except:
+#         print('Dataset has not been prepared. Use a random sample.')
+#         inputs = {'point_clouds': torch.rand((20000, 3)).unsqueeze(0).cuda()}
+#
+#     end_points = model(inputs)
+#     for key in end_points:
+#         print(key, end_points[key])
+#
+#     try:
+#         # Compute loss
+#         for key in sample:
+#             end_points[key] = torch.from_numpy(sample[key]).unsqueeze(0).cuda()
+#         loss, end_points = get_loss(end_points, DC)
+#         print('loss', loss)
+#         end_points['point_clouds'] = inputs['point_clouds']
+#         end_points['pred_mask'] = np.ones((1, 128))
+#         dump_results(end_points, 'tmp', DC)
+#     except:
+#         print('Dataset has not been prepared. Skip loss and dump.')
+
 def test_VoteNet():
     num_class = 10
+    num_points = 20000
     num_heading_bin = 12
     num_size_cluster = 10
-    mean_size_arr = layers.data(name='mean_size_arr', shape=[num_class, 3], dtype='float32') # np.random.random((num_class, 3))
-    # input_feature_dim = 0, num_proposal = 128, vote_factor = 1, sampling = 'vote_fps'
+    input_feature_dim = 0
+    batch_size = 1
+    # mean_size_arr = layers.data(name='mean_size_arr', shape=[num_class, 3], dtype='float32') # np.random.random((num_class, 3))
+    # inputs = layers.data(name='xyz')
+    xyz = fluid.data(name='xyz', shape=[batch_size, num_points, 3], dtype='float32', lod_level=0)
 
-    net = VoteNet(num_class, num_heading_bin, num_size_cluster, mean_size_arr)
+    mean_size_arr_val = np.array([[0.02584677, 0.27209708, 0.91912236],
+                                   [0.52118567, 0.09442533, 0.60527583],
+                                   [0.18992851, 0.08463525, 0.74016808],
+                                   [0.84663676, 0.71893957, 0.11271357],
+                                   [0.82065344, 0.65177494, 0.11037908],
+                                   [0.22033138, 0.64618324, 0.55625422],
+                                   [0.66764257, 0.19630913, 0.23078685],
+                                   [0.27257402, 0.0218716 , 0.2267122 ],
+                                   [0.9639698 , 0.81415039, 0.87099402],
+                                   [0.01661695, 0.71431973, 0.08257291]], dtype=np.float32)
+
+    xyz_val = np.load('test_pcd.npz.npy').astype(np.float32)
+
+    net = testVoteNet(num_class=num_class,
+                  num_points=num_points,
+                  num_heading_bin=num_heading_bin,
+                  num_size_cluster=num_size_cluster,
+                  input_feature_dim=input_feature_dim,
+                  batch_size=batch_size)
+
+    end_points = net.build(xyz, mean_size_arr=mean_size_arr_val)
+
+    gpu = fluid.CUDAPlace(0)
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    # f_list = []
+    #
+    # for key in end_points:
+    #     f_list.append(key)
+
+    out = exe.run(
+        feed={'xyz': xyz_val},
+        fetch_list=[end_points['sa1_gf'], end_points['sa1_module_new_features']]
+                    # end_points['sa1_gf_in'],
+                    # end_points['sa1_gf'],
+                    # [end_points['sa1_inds'],
+                    # end_points['sa1_xyz'],
+                    # end_points['sa1_features'],
+                    # end_points['sa2_inds'],
+                    # end_points['sa2_xyz'],
+                    # end_points['sa2_features'],
+                    # end_points['sa3_xyz'],
+                    # end_points['sa3_features'],
+                    # end_points['sa4_xyz'],
+                    # end_points['sa4_features'],
+                    # end_points['fp2_features'],
+                    # end_points['fp2_xyz'],
+                    # end_points['fp2_inds'],
+                    # end_points['seed_inds'],
+                    # end_points['seed_xyz'],
+                    # end_points['seed_features'],
+                    # end_points['vote_xyz'],
+                    # end_points['vote_features'],
+                    # end_points['aggregated_vote_xyz'],
+                    # end_points['aggregated_vote_inds'],
+                    # end_points['objectness_scores'],
+                    # end_points['center'],
+                    # end_points['heading_scores'],
+                    # end_points['heading_residuals_normalized'],
+                    # end_points['heading_residuals'],
+                    # end_points['size_scores'],
+                    # end_points['size_residuals_normalized'],
+                    # end_points['size_residuals'],
+                    # end_points['sem_cls_scores']]
+    )
+
+    print(out)
+
+
 
 def test_load_mean_size_arr():
     path = '../dataset/scannet/meta_data/scannet_means.npz'
@@ -1010,5 +1208,6 @@ def test_load_mean_size_arr():
     print('mean_size_arr[0]: {}'.format(mean_size_arr[0]))
 
 if __name__ == '__main__':
-    test_backbone()
+    # test_backbone()
     # test_load_mean_size_arr()
+    test_VoteNet()

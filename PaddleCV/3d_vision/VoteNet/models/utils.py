@@ -405,7 +405,9 @@ def test_greaterop():
     y_val = np.array([[0.1313, 0.1197, 0.2880],
                     [0.1332, 0.6165, 0.7328]]).astype(np.float32)
 
-    mask = layers.cast(y > alpha, 'int32')
+    mask = layers.cast(y > alpha, 'float32')
+
+    result = x * (1 - mask) + mask
 
 
     # print(x_val)
@@ -420,7 +422,7 @@ def test_greaterop():
 
     out = exe.run(
         feed={'y': y_val},
-        fetch_list=[mask]
+        fetch_list=[result]
     )
 
     print(out)
@@ -463,5 +465,5 @@ if __name__=='__main__':
     # test_item_assignment()
     # test_mat()
     # test_cross_entropy_loss()
-    # test_greaterop()
-    test_gather_dim2()
+    test_greaterop()
+    # test_gather_dim2()
