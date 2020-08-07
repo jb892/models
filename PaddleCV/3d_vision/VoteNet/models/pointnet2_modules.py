@@ -201,7 +201,7 @@ def conv1d(input,
            num_filters,
            filter_size,
            bn=True,
-           bn_momentum=0.99,
+           bn_momentum=0.9,
            stride=1,
            padding=0,
            dilation=1,
@@ -249,27 +249,27 @@ def conv1d(input,
     bias_attr = ParamAttr(name='{}_conv1d_bias'.format(name)) if not bn else False
 
     out_4dim = layers.conv2d(input=input_4dim,
-                               num_filters=num_filters,
-                               filter_size=filter_size,
-                               stride=1,
-                               padding=0,
-                               dilation=1,
-                               groups=groups,
-                               param_attr=param_attr,
-                               bias_attr=bias_attr,
-                               use_cudnn=use_cudnn,
-                               name=name,
-                               data_format=data_format)
-                               # act=act if not bn else None)
+                             num_filters=num_filters,
+                             filter_size=filter_size,
+                             stride=1,
+                             padding=0,
+                             dilation=1,
+                             groups=groups,
+                             param_attr=param_attr,
+                             bias_attr=bias_attr,
+                             use_cudnn=use_cudnn,
+                             name=name,
+                             data_format=data_format)
+                             # act=act if not bn else None)
     if bn:
         bn_name = name + '_bn'
         out_4dim = layers.batch_norm(out_4dim,
-                                       act=act,
-                                       momentum=bn_momentum,
-                                       param_attr=ParamAttr(name=bn_name + '_scale'),
-                                       bias_attr=ParamAttr(name=bn_name + '_offset'),
-                                       moving_mean_name=bn_name + '_mean',
-                                       moving_variance_name=bn_name + '_var')
+                                     act=act,
+                                     momentum=bn_momentum,
+                                     param_attr=ParamAttr(name=bn_name + '_scale'),
+                                     bias_attr=ParamAttr(name=bn_name + '_offset'),
+                                     moving_mean_name=bn_name + '_mean',
+                                     moving_variance_name=bn_name + '_var')
     if act == "relu":
         out_4dim = layers.relu(out_4dim)
 
@@ -277,38 +277,52 @@ def conv1d(input,
     out_3dim = layers.squeeze(out_4dim, [-1])
     return out_3dim
 
-def conv_bn(input, out_channels, bn=True, bn_momentum=0.95, act='relu', name=None):
+def conv_bn(input, out_channels, bn=True, bn_momentum=0.9, act='relu', name=None, test=True):
     def _get_kaiming_init():
         fan_in = input.shape[1]
         std = (1.0 / fan_in / 3.0) ** 0.5
         return Normal(0., std, 0.)
 
-    param_attr = ParamAttr(name='{}_conv_weight'.format(name),
-                           initializer=_get_kaiming_init())
-    bias_attr = ParamAttr(name='{}_conv_bias'.format(name)) \
-                                  if not bn else False
+    if test:
+        # conv_weight = layers.create_parameter(dtype='float32',
+        #                                       shape=[],
+        #                                       name='{}_conv_weight'.format(name),
+        #                                       default_initializer=Constant(1.0))
+        # conv_bias = layers.create_parameter(dtype='float32',
+        #                                     shape=[],
+        #                                     name='{}_conv_bias'.format(name),
+        #                                     default_initializer=Constant(1.0))
+        param_attr = ParamAttr(name='{}_conv_weight'.format(name),
+                               initializer=Constant(1.0))
+        bias_attr = ParamAttr(name='{}_conv_bias'.format(name),
+                              initializer=Constant(1.0)) if not bn else None
+    else:
+        param_attr = ParamAttr(name='{}_conv_weight'.format(name),
+                               initializer=_get_kaiming_init())
+        bias_attr = ParamAttr(name='{}_conv_bias'.format(name)) if not bn else None
+
     out = layers.conv2d(input,
-                          num_filters=out_channels,
-                          filter_size=1,
-                          stride=1,
-                          padding=0,
-                          dilation=1,
-                          param_attr=param_attr,
-                          bias_attr=bias_attr,
-                          act=act if not bn else None)
+                        num_filters=out_channels,
+                        filter_size=1,
+                        stride=1,
+                        padding=0,
+                        dilation=1,
+                        param_attr=param_attr,
+                        bias_attr=bias_attr,
+                        act=act if not bn else None)
     if bn:
         bn_name = name + "_bn"
         out = layers.batch_norm(out,
-                                  act=act,
-                                  momentum=bn_momentum,
-                                  param_attr=ParamAttr(name=bn_name + "_scale", ),
-                                  bias_attr=ParamAttr(name=bn_name + "_offset"),
-                                  moving_mean_name=bn_name + '_mean',
-                                  moving_variance_name=bn_name + '_var')
+                                act=act,
+                                momentum=bn_momentum,
+                                param_attr=ParamAttr(name=bn_name + "_scale"),
+                                bias_attr=ParamAttr(name=bn_name + "_offset"),
+                                moving_mean_name=bn_name + '_mean',
+                                moving_variance_name=bn_name + '_var')
 
     return out
 
-def MLP(features, out_channels_list, bn=True, bn_momentum=0.95, act='relu', name=None):
+def MLP(features, out_channels_list, bn=True, bn_momentum=0.9, act='relu', name=None):
     out = features
     for i, out_channels in enumerate(out_channels_list):
         out = conv_bn(out, out_channels, bn=bn, act=act, bn_momentum=bn_momentum, name=name + "_{}".format(i))
@@ -329,7 +343,7 @@ def PointnetSAModuleVotes(xyz,
                           normalize_xyz=False,  # normalize local XYZ with radius
                           sample_uniformly=False,
                           ret_unique_cnt=False,
-                          bn_m=0.95,
+                          bn_m=0.9,
                           name=None,
                           end_points=None):
     """
@@ -400,18 +414,18 @@ def PointnetSAModuleVotes(xyz,
     grouped_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2]) # out_shape=[B, C, npoint, nsample]
 
     # logger.info('grouped_features.shape: {}'.format(grouped_features.shape))
+    print('grouped_features.shape = ', grouped_features.shape)
+    if end_points is not None:
+        end_points['sa1_gf'] = grouped_features
 
     # for i, num_out_channel in enumerate(mlp_spec):
     grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_m, name=name+'_mlp')
-
-    if end_points is not None:
-        end_points['sa1_gf'] = grouped_features
 
     new_features = grouped_features
 
     # new_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2]) # (B, mlp_spec[-1], npoint, nsample)
 
-    # logger.info('new_features.shape: {}'.format(new_features.shape))
+    logger.info('new_features.shape: {}'.format(new_features.shape))
 
     # Pooling
     if pooling == 'max': # NCHW format
@@ -428,17 +442,20 @@ def PointnetSAModuleVotes(xyz,
         # new_features: shape = (B, mlp[-1], npoint, 1)
         new_features = layers.reduce_sum(new_features * layers.unsqueeze(rbf, axes=1), dim=-1, keep_dim=True) / float(nsample)
 
-    logger.info('new_features.shape: {}'.format(new_features.shape))
+    # logger.info('new_features.shape: {}'.format(new_features.shape))
 
     new_features = layers.squeeze(new_features, axes=[-1])  # shape=[B, mlp_spec[-1], npoint]
 
     # logger.info('new_features.shape: {}'.format(new_features.shape))
 
+    if end_points is not None:
+        end_points['sa1_module_new_features'] = new_features
+
     # Convert new_feature tensor from 'NCW' to 'NWC' format
     new_features = layers.transpose(new_features, perm=[0, 2, 1])
 
     if end_points is not None:
-        end_points['sa1_module_new_features'] = new_features
+        end_points['sa1_module_new_features_T'] = new_features
 
     # logger.info('new_features.shape: {}'.format(new_features.shape))
 
@@ -455,7 +472,7 @@ def PointnetFPModule(unknown,
                      known_feats,
                      mlps=None,
                      bn=True,
-                     bn_m=0.95,
+                     bn_m=0.9,
                      name=None):
     """
     :param unknown: (B, n, 3) tensor of the xyz positions of the unknown features
@@ -639,7 +656,7 @@ class VotingModule(object):
         """
         self.vote_factor = vote_factor
         self.in_dim = seed_feature_dim
-        self.out_dim = self.in_dim # due to residual feature, in_dim has to be == out_dim
+        self.out_dim = self.in_dim  # due to residual feature, in_dim has to be == out_dim
         self.name = name
 
     def build(self, seed_xyz, seed_features):
@@ -1161,7 +1178,7 @@ def test_VoteNet():
 
     out = exe.run(
         feed={'xyz': xyz_val},
-        fetch_list=[end_points['sa1_gf'], end_points['sa1_module_new_features']]
+        fetch_list=[end_points['sa1_gf'], end_points['sa1_module_new_features_T']]
                     # end_points['sa1_gf_in'],
                     # end_points['sa1_gf'],
                     # [end_points['sa1_inds'],

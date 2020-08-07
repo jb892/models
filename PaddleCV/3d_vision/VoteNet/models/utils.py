@@ -456,6 +456,29 @@ def test_gather_dim2():
     print(out)
 
 
+def test_conv_weight_init():
+    BATCH_SIZE = 1
+    X_SHAPE = (BATCH_SIZE, 8, 8, 3)
+
+    x = fluid.data(name='x', shape=X_SHAPE, dtype='float32')
+
+    x_val = np.random.rand(BATCH_SIZE, 3, 1).astype(np.float32)
+
+    print(x_val)
+    # print(y_val)
+
+    gpu = fluid.CUDAPlace(0)
+    exe = fluid.Executor(gpu)
+    exe.run(fluid.default_startup_program())
+
+    out = exe.run(
+        feed={'x': x_val},
+        fetch_list=[result]
+    )
+
+    print(out)
+
+
 
 if __name__=='__main__':
     # test_paddle_ops()
