@@ -13,7 +13,7 @@ from __future__ import print_function
 import numpy as np
 from scipy.spatial import ConvexHull
 
-__all__ = ['box3d_iou']
+__all__ = ['box3d_iou', 'get_3d_box']
 
 def polygon_clip(subjectPolygon, clipPolygon):
     """ Clip a polygon with another polygon.

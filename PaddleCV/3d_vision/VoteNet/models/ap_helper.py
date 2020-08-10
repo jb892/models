@@ -30,7 +30,7 @@ from .box_util import get_3d_box
 from .nms import nms_2d_faster, nms_3d_faster, nms_3d_faster_samecls
 from .pc_util import extract_pc_in_box3d
 
-__all__ = ['APCalculator']
+__all__ = ['APCalculator', 'parse_predictions', 'parse_groundtruths']
 
 def flip_axis_to_camera(pc):
     ''' Flip X-right,Y-forward,Z-up to X-right,Y-down,Z-forward
@@ -56,6 +56,30 @@ def softmax(x):
     probs /= np.sum(probs, axis=len(shape) - 1, keepdims=True)
     return probs
 
+def gather_numpy(input, dim, index):
+    """
+    Gathers values along an axis specified by dim.
+    For a 3-D tensor the output is specified by:
+        out[i][j][k] = input[index[i][j][k]][j][k]  # if dim == 0
+        out[i][j][k] = input[i][index[i][j][k]][k]  # if dim == 1
+        out[i][j][k] = input[i][j][index[i][j][k]]  # if dim == 2
+
+    :param dim: The axis along which to index
+    :param index: A tensor of indices of elements to gather
+    :return: tensor of gathered values
+    """
+    idx_xsection_shape = index.shape[:dim] + index.shape[dim + 1:]
+    self_xsection_shape = input.shape[:dim] + input.shape[dim + 1:]
+    if idx_xsection_shape != self_xsection_shape:
+        raise ValueError("Except for dimension " + str(dim) +
+                         ", all dimensions of index and self should be the same size")
+    if index.dtype != np.dtype('int_'):
+        raise TypeError("The values of index must be integers")
+    data_swaped = np.swapaxes(input, 0, dim)
+    index_swaped = np.swapaxes(index, 0, dim)
+    gathered = np.choose(index_swaped, data_swaped)
+    return np.swapaxes(gathered, 0, dim)
+
 
 def parse_predictions(end_points, config_dict):
     """ Parse predictions to OBB parameters and suppress overlapping boxes
@@ -63,7 +87,7 @@ def parse_predictions(end_points, config_dict):
     Args:
         end_points: dict
             {point_clouds, center, heading_scores, heading_residuals,
-            size_scores, size_residuals, sem_cls_scores}
+            size_scores, size_residuals, sem_cls_scores, objectness_scores}
         config_dict: dict
             {dataset_config, remove_empty_box, use_3d_nms, nms_iou,
             use_old_type_nms, conf_thresh, per_class_proposal}
@@ -74,18 +98,32 @@ def parse_predictions(end_points, config_dict):
             where pred_list_i = [(pred_sem_cls, box_params, box_score)_j]
             where j = 0, ..., num of valid detections - 1 from sample input i
     """
-    pred_center = end_points['center']  # B,num_proposal,3
-    pred_heading_class = layers.argmax(end_points['heading_scores'], axis=-1)  # B,num_proposal
-    pred_heading_residual = torch.gather(end_points['heading_residuals'], 2,
-                                         pred_heading_class.unsqueeze(-1))  # B,num_proposal,1
-    pred_heading_residual = layers.squeeze(pred_heading_residual, [2])
-    pred_size_class = layers.argmax(end_points['size_scores'], axis=-1)  # B,num_proposal
-    pred_size_residual = torch.gather(end_points['size_residuals'], 2,
-                                      pred_size_class.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, 1,
-                                                                                         3))  # B,num_proposal,1,3
-    pred_size_residual = layers.squeeze(pred_size_residual, [2])
-    pred_sem_cls = layers.argmax(end_points['sem_cls_scores'], axis=-1)  # B,num_proposal
-    sem_cls_probs = softmax(end_points['sem_cls_scores'].detach().cpu().numpy())  # B,num_proposal,10
+    pred_center = np.array(end_points['center'], dtype=np.float32)  # B,num_proposal,3
+
+    # print('pred_center.shape = ', pred_center.shape)
+
+    heading_scores = np.array(end_points['heading_scores'], dtype=np.float32)
+
+    # print('heading_scores.shape = ', heading_scores.shape)
+
+    pred_heading_class = np.argmax(heading_scores, axis=-1)  # B,num_proposal
+
+    heading_residuals = np.array(end_points['heading_residuals'], dtype=np.float32)
+    pred_heading_residual = gather_numpy(heading_residuals, 2,
+                                         np.expand_dims(pred_heading_class, -1))  # B,num_proposal,1
+    pred_heading_residual = np.squeeze(pred_heading_residual, 2)
+
+    size_scores = np.array(end_points['size_scores'], dtype=np.float32)
+    pred_size_class = np.argmax(size_scores, axis=-1)  # B,num_proposal
+    size_residuals = end_points['size_residuals']
+    pred_size_class_expend = np.tile(np.expand_dims(np.expand_dims(pred_size_class, -1), -1), (1, 1, 1, 3))
+    pred_size_residual = gather_numpy(size_residuals, 2, pred_size_class_expend)  # B,num_proposal,1,3
+
+    pred_size_residual = np.squeeze(pred_size_residual, 2)
+    sem_cls_scores = np.array(end_points['sem_cls_scores'], dtype=np.float32)
+    pred_sem_cls = np.argmax(sem_cls_scores, axis=-1)  # B,num_proposal
+
+    sem_cls_probs = softmax(sem_cls_scores)  # B,num_proposal,10
     pred_sem_cls_prob = np.max(sem_cls_probs, -1)  # B,num_proposal
 
     num_proposal = pred_center.shape[1]
@@ -93,13 +131,11 @@ def parse_predictions(end_points, config_dict):
     # assume upright_camera coord.
     bsize = pred_center.shape[0]
     pred_corners_3d_upright_camera = np.zeros((bsize, num_proposal, 8, 3))
-    pred_center_upright_camera = flip_axis_to_camera(pred_center.detach().cpu().numpy())
+    pred_center_upright_camera = flip_axis_to_camera(pred_center)
     for i in range(bsize):
         for j in range(num_proposal):
-            heading_angle = config_dict['dataset_config'].class2angle( \
-                pred_heading_class[i, j].detach().cpu().numpy(), pred_heading_residual[i, j].detach().cpu().numpy())
-            box_size = config_dict['dataset_config'].class2size( \
-                int(pred_size_class[i, j].detach().cpu().numpy()), pred_size_residual[i, j].detach().cpu().numpy())
+            heading_angle = config_dict['dataset_config'].class2angle(pred_heading_class[i, j], pred_heading_residual[i, j])
+            box_size = config_dict['dataset_config'].class2size(int(pred_size_class[i, j]), pred_size_residual[i, j])
             corners_3d_upright_camera = get_3d_box(box_size, heading_angle, pred_center_upright_camera[i, j, :])
             pred_corners_3d_upright_camera[i, j] = corners_3d_upright_camera
 
@@ -109,7 +145,7 @@ def parse_predictions(end_points, config_dict):
     if config_dict['remove_empty_box']:
         # -------------------------------------
         # Remove predicted boxes without any point within them..
-        batch_pc = end_points['point_clouds'].cpu().numpy()[:, :, 0:3]  # B,N,3
+        batch_pc = np.array(end_points['point_clouds'], dtype=np.float32) [:, :, 0:3]  # B,N,3
         for i in range(bsize):
             pc = batch_pc[i, :, :]  # (N,3)
             for j in range(K):
@@ -120,7 +156,7 @@ def parse_predictions(end_points, config_dict):
                     nonempty_box_mask[i, j] = 0
         # -------------------------------------
 
-    obj_logits = end_points['objectness_scores'].detach().cpu().numpy()
+    obj_logits = np.array(end_points['objectness_scores'], dtype=np.float32)
     obj_prob = softmax(obj_logits)[:, :, 1]  # (B,K)
     if not config_dict['use_3d_nms']:
         # ---------- NMS input: pred_with_prob in (B,K,7) -----------
@@ -192,7 +228,7 @@ def parse_predictions(end_points, config_dict):
                              pred_mask[i, j] == 1 and obj_prob[i, j] > config_dict['conf_thresh']]
             batch_pred_map_cls.append(cur_list)
         else:
-            batch_pred_map_cls.append([(pred_sem_cls[i, j].item(), pred_corners_3d_upright_camera[i, j], obj_prob[i, j]) \
+            batch_pred_map_cls.append([(pred_sem_cls[i, j], pred_corners_3d_upright_camera[i, j], obj_prob[i, j]) \
                                        for j in range(pred_center.shape[1]) if
                                        pred_mask[i, j] == 1 and obj_prob[i, j] > config_dict['conf_thresh']])
     end_points['batch_pred_map_cls'] = batch_pred_map_cls
@@ -217,32 +253,30 @@ def parse_groundtruths(end_points, config_dict):
             where gt_list_i = [(gt_sem_cls, gt_box_params)_j]
             where j = 0, ..., num of objects - 1 at sample input i
     """
-    center_label = end_points['center_label']
-    heading_class_label = end_points['heading_class_label']
-    heading_residual_label = end_points['heading_residual_label']
-    size_class_label = end_points['size_class_label']
-    size_residual_label = end_points['size_residual_label']
-    box_label_mask = end_points['box_label_mask']
-    sem_cls_label = end_points['sem_cls_label']
+    center_label = np.array(end_points['center_label'], dtype=np.float32)
+    heading_class_label = np.array(end_points['heading_class_label'], dtype=np.int64)
+    heading_residual_label = np.array(end_points['heading_residual_label'], dtype=np.float32)
+    size_class_label = np.array(end_points['size_class_label'], dtype=np.int64)
+    size_residual_label = np.array(end_points['size_residual_label'], dtype=np.float32)
+    box_label_mask = np.array(end_points['box_label_mask'], dtype=np.float32)
+    sem_cls_label = np.array(end_points['sem_cls_label'], dtype=np.int64)
     bsize = center_label.shape[0]
 
     K2 = center_label.shape[1]  # K2==MAX_NUM_OBJ
     gt_corners_3d_upright_camera = np.zeros((bsize, K2, 8, 3))
-    gt_center_upright_camera = flip_axis_to_camera(center_label[:, :, 0:3].detach().cpu().numpy())
+    gt_center_upright_camera = flip_axis_to_camera(center_label[:, :, 0:3])
     for i in range(bsize):
         for j in range(K2):
             if box_label_mask[i, j] == 0: continue
-            heading_angle = config_dict['dataset_config'].class2angle(heading_class_label[i, j].detach().cpu().numpy(),
-                                                                      heading_residual_label[
-                                                                          i, j].detach().cpu().numpy())
-            box_size = config_dict['dataset_config'].class2size(int(size_class_label[i, j].detach().cpu().numpy()),
-                                                                size_residual_label[i, j].detach().cpu().numpy())
+            heading_angle = config_dict['dataset_config'].class2angle(heading_class_label[i, j],
+                                                                      heading_residual_label[i, j])
+            box_size = config_dict['dataset_config'].class2size(int(size_class_label[i, j]), size_residual_label[i, j])
             corners_3d_upright_camera = get_3d_box(box_size, heading_angle, gt_center_upright_camera[i, j, :])
             gt_corners_3d_upright_camera[i, j] = corners_3d_upright_camera
 
     batch_gt_map_cls = []
     for i in range(bsize):
-        batch_gt_map_cls.append([(sem_cls_label[i, j].item(), gt_corners_3d_upright_camera[i, j]) for j in
+        batch_gt_map_cls.append([(sem_cls_label[i, j], gt_corners_3d_upright_camera[i, j]) for j in
                                  range(gt_corners_3d_upright_camera.shape[1]) if box_label_mask[i, j] == 1])
     end_points['batch_gt_map_cls'] = batch_gt_map_cls
 

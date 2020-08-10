@@ -29,6 +29,7 @@ import paddle.fluid.layers.learning_rate_scheduler as lr_scheduler
 from models import *
 from data.scannet_reader import ScannetDetectionReader
 from utils import *
+from models.ap_helper import APCalculator, parse_groundtruths, parse_predictions
 
 logging.root.handlers = []
 FORMAT = '%(asctime)s-%(levelname)s: %(message)s'
@@ -200,6 +201,21 @@ def train():
     if not os.path.isdir(args.save_dir):
         os.makedirs(args.save_dir)
 
+    # Used for AP calculation
+    DATASET_CONFIG = ScannetDatasetConfig()
+
+    CONFIG_DICT = {
+        'remove_empty_box': False,
+        'use_3d_nms': True,
+        'nms_iou': 0.25,
+        'use_old_type_nms': False,
+        'cls_nms': True,
+        'per_class_proposal': True,
+        'conf_thresh': 0.05,
+        'batch_size': args.batch_size,
+        'dataset_config': DATASET_CONFIG
+    }
+
     # Prepare get_decay_momentum function
     def get_decay_momentum(momentum_init, decay_steps, decay_rate):
         global_step = lr_scheduler._decay_step_counter()
@@ -246,7 +262,7 @@ def train():
             train_model.build_input()
             train_model.build()
             train_feeds = train_model.get_feeds()
-            train_outputs = train_model.get_outputs()
+            train_outputs = train_model.get_outputs('train')
             train_loader = train_model.get_loader()
             train_loss = train_outputs['loss']
 
@@ -285,7 +301,7 @@ def train():
             test_model.build_input()
             test_model.build()
             test_feeds = test_model.get_feeds()
-            test_outputs = test_model.get_outputs()
+            test_outputs = test_model.get_outputs('test')
             test_loader = test_model.get_loader()
     test_prog = test_prog.clone(True)
     test_keys, test_values = parse_outputs(test_outputs)
@@ -368,6 +384,7 @@ def train():
 
             # evaluation
             if not args.enable_ce and epoch_id % args.eval_interval == 0:
+                ap_calculator = APCalculator(ap_iou_thresh=args.ap_iou_thresh, class2type_map=DATASET_CONFIG.class2type)
                 try:
                     test_loader.start()
                     test_iter = 0
@@ -377,18 +394,29 @@ def train():
                         test_outs = exe.run(test_compile_prog, fetch_list=test_values)
                         period = time.time() - cur_time
                         test_periods.append(period)
-                        test_stat.update(test_keys, test_outs)
+                        test_stat.update(test_keys[:13], test_outs[:13])
+
+                        # Calculate AP figures:
+                        batch_pred_map_cls = parse_predictions(dict(zip(test_keys[13:21], test_outs[13:21])), CONFIG_DICT)
+                        batch_gt_map_cls = parse_groundtruths(dict(zip(test_keys[21:], test_outs[21:])), CONFIG_DICT)
+
+                        ap_calculator.step(batch_pred_map_cls, batch_gt_map_cls)
+
                         if test_iter % args.log_interval == 0:
                             log_str = ""
-                            for name, value in zip(test_keys, test_outs):
+                            for name, value in zip(test_keys[:13], test_outs[:13]):
                                 log_str += "{}: {:.4f}, \n".format(name, np.mean(value))
                             logger.info("[TEST] Epoch {}, batch {}: {}time: {:.2f}".format(epoch_id, test_iter, log_str,
                                                                                            period))
                         test_iter += 1
                 except fluid.core.EOFException:
+                    ap_output = ap_calculator.compute_metrics()
+                    log_str = ""
+                    for key in ap_output:
+                        log_str += '{}: {:.4f}, \n'.format(key, ap_output[key])
                     logger.info(
-                        "[TEST] Epoch {} finished, {}average time: {:.2f}".format(epoch_id, test_stat.get_mean_log(),
-                                                                                  np.mean(test_periods[1:])))
+                        "[TEST] Epoch {} finished, {}, {} average time: {:.2f}".format(epoch_id, test_stat.get_mean_log(),
+                                                                                       log_str, np.mean(test_periods[1:])))
                 finally:
                     test_loader.reset()
                     test_stat.reset()

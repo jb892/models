@@ -808,6 +808,8 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
     center = base_xyz + net[:, :, 2:5]  # (batch_size, num_proposal, 3)
     end_points['center'] = center
 
+    # logger.info('center.shape = ', center.shape)
+
     heading_scores = net[:, :, 5:5 + num_heading_bin]
     heading_residuals_normalized = net[:, :, 5 + num_heading_bin:5 + num_heading_bin * 2]
     end_points['heading_scores'] = heading_scores  # Bxnum_proposalxnum_heading_bin
@@ -1042,13 +1044,53 @@ class VoteNet(object):
     def get_loader(self):
         return self.loader
 
-    def get_outputs(self):
-        return {'loss': self.loss, 'obj_acc': self.end_points['obj_acc'], 'box_loss': self.end_points['box_loss'],
-                'center_loss': self.end_points['center_loss'], 'heading_cls_loss': self.end_points['heading_cls_loss'],
-                'heading_reg_loss': self.end_points['heading_reg_loss'], 'neg_ratio': self.end_points['neg_ratio'],
-                'objectness_loss': self.end_points['objectness_loss'], 'pos_ratio': self.end_points['pos_ratio'],
-                'sem_cls_loss': self.end_points['sem_cls_loss'], 'size_cls_loss': self.end_points['size_cls_loss'],
-                'size_reg_loss': self.end_points['size_reg_loss'], 'vote_loss': self.end_points['vote_loss']}
+    def get_outputs(self, mode='test'):
+        if mode == 'train':
+            return {'loss': self.loss,
+                    'obj_acc': self.end_points['obj_acc'],
+                    'box_loss': self.end_points['box_loss'],
+                    'center_loss': self.end_points['center_loss'],
+                    'heading_cls_loss': self.end_points['heading_cls_loss'],
+                    'heading_reg_loss': self.end_points['heading_reg_loss'],
+                    'neg_ratio': self.end_points['neg_ratio'],
+                    'objectness_loss': self.end_points['objectness_loss'],
+                    'pos_ratio': self.end_points['pos_ratio'],
+                    'sem_cls_loss': self.end_points['sem_cls_loss'],
+                    'size_cls_loss': self.end_points['size_cls_loss'],
+                    'size_reg_loss': self.end_points['size_reg_loss'],
+                    'vote_loss': self.end_points['vote_loss']}
+        elif mode == 'test':
+            return {'loss': self.loss,
+                    'obj_acc': self.end_points['obj_acc'],
+                    'box_loss': self.end_points['box_loss'],
+                    'center_loss': self.end_points['center_loss'],
+                    'heading_cls_loss': self.end_points['heading_cls_loss'],
+                    'heading_reg_loss': self.end_points['heading_reg_loss'],
+                    'neg_ratio': self.end_points['neg_ratio'],
+                    'objectness_loss': self.end_points['objectness_loss'],
+                    'pos_ratio': self.end_points['pos_ratio'],
+                    'sem_cls_loss': self.end_points['sem_cls_loss'],
+                    'size_cls_loss': self.end_points['size_cls_loss'],
+                    'size_reg_loss': self.end_points['size_reg_loss'],
+                    'vote_loss': self.end_points['vote_loss'],
+                    'point_clouds': self.xyz,
+                    'center': self.end_points['center'],
+                    'heading_scores': self.end_points['heading_scores'],
+                    'heading_residuals': self.end_points['heading_residuals'],
+                    'size_scores': self.end_points['size_scores'],
+                    'size_residuals': self.end_points['size_residuals'],
+                    'sem_cls_scores': self.end_points['sem_cls_scores'],
+                    'objectness_scores': self.end_points['objectness_scores'],
+                    'center_label': self.end_points['center_label'],
+                    'heading_class_label': self.end_points['heading_class_label'],
+                    'heading_residual_label': self.end_points['heading_residual_label'],
+                    'size_class_label': self.end_points['size_class_label'],
+                    'size_residual_label': self.end_points['size_residual_label'],
+                    'sem_cls_label': self.end_points['sem_cls_label'],
+                    'box_label_mask': self.end_points['box_label_mask']}
+        else:
+            logger.error('mode param must equal to test or train.')
+            exit(-1)
 
 def prepare_input_data(num_points, num_class, input_feature_dim):
 
@@ -1182,17 +1224,14 @@ def test_VoteNet():
     out = exe.run(
         feed={'xyz': xyz_val},
         fetch_list=[end_points['objectness_scores'],
-                    end_points['center'],
-                    end_points['heading_scores'],
-                    end_points['heading_residuals_normalized'],
-                    end_points['heading_residuals'],
-                    end_points['size_scores'],
-                    end_points['size_residuals_normalized'],
-                    end_points['size_residuals'],
-                    end_points['sem_cls_scores']]
+                    end_points['center']]
     )
 
-    print(out)
+    center_tensor = out[1]
+
+    print(center_tensor)
+
+    # print(out)
 
 
 

@@ -21,6 +21,7 @@ from .ext_op import pointnet_lib
 from . import eval_det
 from . import metric_util
 from . import box_util
+from . import ap_helper
 
 from .pointnet2_modules import *
 from .utils import *
@@ -29,6 +30,7 @@ from .ext_op.pointnet_lib import *
 from .eval_det import *
 from .metric_util import *
 from .box_util import *
+from .ap_helper import *
 
 __all__ = pointnet2_modules.__all__
 __all__ += utils.__all__
@@ -37,3 +39,4 @@ __all__ += pointnet_lib.__all__
 __all__ += eval_det.__all__
 __all__ += metric_util.__all__
 __all__ += box_util.__all__
+__all__ += ap_helper.__all__
