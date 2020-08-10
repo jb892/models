@@ -68,6 +68,9 @@ class ScannetDetectionReader(object):
             logger.error('illegal mode name')
             exit(-1)
 
+    def __len__(self):
+        return len(self.scan_names)
+
     def get_reader(self, batch_size):
         scan_names = self.scan_names
         data_path = self.data_path

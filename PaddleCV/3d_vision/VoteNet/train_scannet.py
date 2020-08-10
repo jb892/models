@@ -24,6 +24,7 @@ import numpy as np
 import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 import paddle.fluid.framework as framework
+import paddle.fluid.layers.learning_rate_scheduler as lr_scheduler
 
 from models import *
 from data.scannet_reader import ScannetDetectionReader
@@ -91,16 +92,16 @@ def parse_args():
         type=int,
         default=18,
         help='number of size of cluster, default: 18')
-    parser.add_argument(
-        '--lr',
-        type=float,
-        default=0.001,
-        help='initial learning rate, default 0.001')
-    parser.add_argument(
-        '--lr_decay',
-        type=float,
-        default=0.5,
-        help='learning rate decay gamma, default 0.5')
+    # parser.add_argument(
+    #     '--lr',
+    #     type=float,
+    #     default=0.001,
+    #     help='initial learning rate, default 0.001')
+    # parser.add_argument(
+    #     '--lr_decay',
+    #     type=float,
+    #     default=0.5,
+    #     help='learning rate decay gamma, default 0.5')
     parser.add_argument(
         '--lr_decay_steps',
         type=str,
@@ -109,8 +110,8 @@ def parse_args():
     parser.add_argument(
         '--lr_decay_rates',
         type=str,
-        default='0.1,0.1,0.1',
-        help='Decay rates for lr decay [default: 0.1,0.1,0.1]')
+        default='0.001,0.0001,0.00001,0.000001',
+        help='Decay rates for lr decay [default: 0.001,0.0001,0.00001,0.000001]')
     parser.add_argument(
         '--use_height',
         type=bool,
@@ -124,7 +125,7 @@ def parse_args():
     parser.add_argument(
         '--bn_momentum',
         type=float,
-        default=0.99,
+        default=0.5,
         help='initial batch norm momentum, default 0.99')
     parser.add_argument(
         '--decay_steps',
@@ -175,8 +176,8 @@ def parse_args():
     parser.add_argument(
         '--log_interval',
         type=int,
-        default=100,
-        help='mini-batch interval for logging.')
+        default=10,
+        help='mini-batch interval for logging (in step).')
     parser.add_argument(
         '--enable_ce',
         action='store_true',
@@ -186,7 +187,7 @@ def parse_args():
         '--eval_interval',
         type=int,
         default=10,
-        help='mini-batch interval for validation.')
+        help='mini-batch interval for validation (in epoch).')
     args = parser.parse_args()
     return args
 
@@ -198,6 +199,22 @@ def train():
 
     if not os.path.isdir(args.save_dir):
         os.makedirs(args.save_dir)
+
+    # Prepare get_decay_momentum function
+    def get_decay_momentum(momentum_init, decay_steps, decay_rate):
+        global_step = lr_scheduler._decay_step_counter()
+        momentum = fluid.layers.create_global_var(
+            shape=[1],
+            value=float(momentum_init),
+            dtype='float32',
+            # set persistable for save checkpoints and resume
+            persistable=True,
+            name="momentum")
+        div_res = global_step / decay_steps
+        decayed_momentum = 1.0 - momentum_init * (decay_rate ** div_res)
+        fluid.layers.assign(decayed_momentum, momentum)
+
+        return momentum
 
     # build model
     if args.enable_ce:
@@ -222,7 +239,8 @@ def train():
                 input_feature_dim=NUM_INPUT_FEATURE_CHANNEL,
                 vote_factor=args.vote_factor,
                 sampling=args.cluster_sampling,
-                batch_size=args.batch_size
+                batch_size=args.batch_size,
+                bn_momentum=get_decay_momentum(0.5, 20 * 150, 0.5) # 20 epoch, each epoch has 150 steps
             )
 
             train_model.build_input()
@@ -231,13 +249,12 @@ def train():
             train_outputs = train_model.get_outputs()
             train_loader = train_model.get_loader()
             train_loss = train_outputs['loss']
-            lr = layers.exponential_decay(
-                learning_rate=args.lr,
-                decay_steps=args.decay_steps,
-                decay_rate=args.lr_decay,
-                staircase=True
-            )
-            lr = layers.clip(lr, 1e-5, args.lr)
+
+            LR_DECAY_STEPS = [int(x)*150 for x in args.lr_decay_steps.split(',')]
+            LR_VALUES = [float(x) for x in args.lr_decay_rates.split(',')]
+
+            lr = layers.piecewise_decay(LR_DECAY_STEPS, LR_VALUES)
+
             params = []
             for var in train_prog.list_vars():
                 if fluid.io.is_parameter(var):
@@ -318,8 +335,8 @@ def train():
     train_stat = Stat()
     test_stat = Stat()
 
-    ce_time = 0
-    ce_loss = []
+    # ce_time = 0
+    # ce_loss = []
 
     for epoch_id in range(args.epoch):
         try:
@@ -336,9 +353,9 @@ def train():
                 if train_iter % args.log_interval == 0:
                     log_str = ""
                     for name, values in zip(train_keys + ['learning_rate'], train_outs):
-                        log_str += "{}: {:.5f}, ".format(name, np.mean(values))
-                        if name == 'loss':
-                            ce_loss.append(np.mean(values))
+                        log_str += "{}: {:.5f},\n".format(name, np.mean(values))
+                        # if name == 'loss':
+                        #     ce_loss.append(np.mean(values))
                     logger.info(
                         "[TRAIN] Epoch {}, batch {}: {}time: {:.2f}".format(epoch_id, train_iter, log_str, period))
                 train_iter += 1
@@ -364,7 +381,7 @@ def train():
                         if test_iter % args.log_interval == 0:
                             log_str = ""
                             for name, value in zip(test_keys, test_outs):
-                                log_str += "{}: {:.4f}, ".format(name, np.mean(value))
+                                log_str += "{}: {:.4f}, \n".format(name, np.mean(value))
                             logger.info("[TEST] Epoch {}, batch {}: {}time: {:.2f}".format(epoch_id, test_iter, log_str,
                                                                                            period))
                         test_iter += 1
@@ -382,18 +399,18 @@ def train():
             train_stat.reset()
             train_periods = []
 
-    # only for ce
-    if args.enable_ce:
-        card_num = get_cards()
-        _loss = 0
-        _time = 0
-        try:
-            _time = ce_time
-            _loss = np.mean(ce_loss[1:])
-        except:
-            print("ce info error")
-        print("kpis\ttrain_seg_%s_duration_card%s\t%s" % (args.model, card_num, _time))
-        print("kpis\ttrain_seg_%s_loss_card%s\t%f" % (args.model, card_num, _loss))
+    # # only for ce
+    # if args.enable_ce:
+    #     card_num = get_cards()
+    #     _loss = 0
+    #     _time = 0
+    #     try:
+    #         _time = ce_time
+    #         _loss = np.mean(ce_loss[1:])
+    #     except:
+    #         print("ce info error")
+    #     print("kpis\ttrain_seg_%s_duration_card%s\t%s" % (args.model, card_num, _time))
+    #     print("kpis\ttrain_seg_%s_loss_card%s\t%f" % (args.model, card_num, _loss))
 
 def get_cards():
     num = 0

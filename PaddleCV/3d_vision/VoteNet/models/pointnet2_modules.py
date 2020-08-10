@@ -337,7 +337,7 @@ def PointnetSAModuleVotes(xyz,
                           normalize_xyz=False,  # normalize local XYZ with radius
                           sample_uniformly=False,
                           ret_unique_cnt=False,
-                          bn_m=0.9,
+                          bn_momentum=0.9,
                           name=None,
                           end_points=None):
     """
@@ -408,7 +408,7 @@ def PointnetSAModuleVotes(xyz,
     # logger.info('grouped_features.shape: {}'.format(grouped_features.shape))
 
     # for i, num_out_channel in enumerate(mlp_spec):
-    grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_m, name=name+'_mlp')
+    grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_momentum, name=name+'_mlp')
 
     new_features = grouped_features
 
@@ -455,7 +455,7 @@ def PointnetFPModule(unknown,
                      known_feats,
                      mlps=None,
                      bn=True,
-                     bn_m=0.9,
+                     bn_momentum=0.9,
                      name=None,
                      batch_size=1,
                      end_points=None):
@@ -499,7 +499,7 @@ def PointnetFPModule(unknown,
     new_features = layers.transpose(new_features, perm=[0, 2, 1])  # shape=(B, C2 + C1, N)
     new_features = layers.unsqueeze(new_features, axes=-1)  # shape=(B, C2+C1, N, 1)
     # for i, num_out_channel in enumerate(mlps):
-    new_features = MLP(new_features, out_channels_list=mlps, bn=bn, bn_momentum=bn_m, name=name+'_mlp')
+    new_features = MLP(new_features, out_channels_list=mlps, bn=bn, bn_momentum=bn_momentum, name=name+'_mlp')
     new_features = layers.squeeze(new_features, axes=[-1])  # shape=(B, C2+C1, N)
 
     # Convert feature tensor from 'NCW' to 'NWC'
@@ -509,9 +509,10 @@ def PointnetFPModule(unknown,
 # Checked!
 class Pointnet2Backbone(object):
 
-    def __init__(self,  input_feature_dim=0, batch_size=1):
+    def __init__(self,  input_feature_dim=0, batch_size=1, bn_momentum=0.9):
         self.input_feature_dim = input_feature_dim
         self.batch_size = batch_size
+        self.bn_momentum = bn_momentum
 
     def build(self, xyz, features=None, end_points=None):
         """
@@ -537,7 +538,8 @@ class Pointnet2Backbone(object):
             use_xyz=True,
             normalize_xyz=True,
             name='sa_layer1',
-            end_points=end_points
+            end_points=end_points,
+            bn_momentum=self.bn_momentum
         )
 
         # Save SA1 layer output result
@@ -558,7 +560,8 @@ class Pointnet2Backbone(object):
             mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
-            name='sa_layer2'
+            name='sa_layer2',
+            bn_momentum=self.bn_momentum
         )
 
         # print('sa2_inds.shape', l2_inds.shape)
@@ -579,7 +582,8 @@ class Pointnet2Backbone(object):
             mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
-            name='sa_layer3'
+            name='sa_layer3',
+            bn_momentum=self.bn_momentum
         )
 
         # Save SA3 layer output result
@@ -598,7 +602,8 @@ class Pointnet2Backbone(object):
             mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
-            name='sa_layer4'
+            name='sa_layer4',
+            bn_momentum=self.bn_momentum
         )
 
         # Save SA4 layer output result
@@ -607,9 +612,10 @@ class Pointnet2Backbone(object):
 
         # --------- 2 FEATURE UPSAMPLING LAYERS --------
         fp1_feature = PointnetFPModule(unknown=l3_xyz, known=l4_xyz, unknown_feats=l3_feature, known_feats=l4_feature,
-                                      mlps=[256, 256], name='fp_layer1', batch_size=self.batch_size, end_points=end_points)
+                                      mlps=[256, 256], name='fp_layer1', batch_size=self.batch_size, end_points=end_points,
+                                       bn_momentum=self.bn_momentum)
         fp2_feature = PointnetFPModule(unknown=l2_xyz, known=l3_xyz, unknown_feats=l2_feature, known_feats=fp1_feature,
-                                       mlps=[256, 256], name='fp_layer2', batch_size=self.batch_size)
+                                       mlps=[256, 256], name='fp_layer2', batch_size=self.batch_size, bn_momentum=self.bn_momentum)
 
         # Save fp layer output
         end_points['fp2_features'] = fp2_feature
@@ -622,7 +628,7 @@ class Pointnet2Backbone(object):
 
 # Checked!
 class VotingModule(object):
-    def __init__(self, vote_factor, seed_feature_dim, batch_size=1, name=None):
+    def __init__(self, vote_factor, seed_feature_dim, batch_size=1, name=None, bn_momentum=0.99):
         """ Votes generation from seed point features.
 
         Args:
@@ -638,6 +644,7 @@ class VotingModule(object):
         self.out_dim = self.in_dim  # due to residual feature, in_dim has to be == out_dim
         self.name = name
         self.batch_size = batch_size
+        self.bn_momentum = bn_momentum
 
     def build(self, seed_xyz, seed_features, end_points=None):
         """
@@ -652,8 +659,8 @@ class VotingModule(object):
         num_seed = seed_xyz.shape[1]
         num_vote = num_seed * self.vote_factor
 
-        net = conv1d(seed_features, self.in_dim, filter_size=1, name=self.name+'_conv1d_1')
-        net = conv1d(net, self.in_dim, filter_size=1, name=self.name+'_conv1d_2')
+        net = conv1d(seed_features, self.in_dim, filter_size=1, name=self.name+'_conv1d_1', bn_momentum=self.bn_momentum)
+        net = conv1d(net, self.in_dim, filter_size=1, name=self.name+'_conv1d_2', bn_momentum=self.bn_momentum)
         net = conv1d(net,
                      num_filters=(3+self.out_dim)*self.vote_factor,
                      filter_size=1,
@@ -682,7 +689,8 @@ class VotingModule(object):
 
 # Checked!
 class ProposalModule(object):
-    def __init__(self, num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, seed_feat_dim=256, name=None):
+    def __init__(self, num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, seed_feat_dim=256,
+                 name=None, bn_momentum=0.9):
         self.num_class = num_class
         self.num_heading_bin = num_heading_bin
         self.num_size_cluster = num_size_cluster
@@ -691,6 +699,7 @@ class ProposalModule(object):
         self.sampling = sampling
         self.seed_feat_dim = seed_feat_dim
         self.name = name
+        self.bn_momentum = bn_momentum
 
     def build(self, xyz, features, end_points, batch_size=1, mean_size_arr=None):
         """
@@ -712,7 +721,8 @@ class ProposalModule(object):
                 mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
-                name=self.name+'_sa_layer'
+                name=self.name+'_sa_layer',
+                bn_momentum=self.bn_momentum
             )
             sample_inds = fps_inds
         elif self.sampling == 'seed_fps':
@@ -729,7 +739,8 @@ class ProposalModule(object):
                 mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
-                name=self.name+'_sa_layer'
+                name=self.name+'_sa_layer',
+                bn_momentum=self.bn_momentum
             )
         elif self.sampling == 'random':
             # Random sampling from the votes
@@ -746,7 +757,8 @@ class ProposalModule(object):
                 mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
-                name=self.name+'_sa_layer'
+                name=self.name+'_sa_layer',
+                bn_momentum=self.bn_momentum
             )
         else:
             print('Unknown sampling strategy: %s. Exiting!'%(self.sampling))
@@ -757,10 +769,12 @@ class ProposalModule(object):
         # Convert tensor from 'NWC' to 'NCW' format
         features = layers.transpose(features, perm=[0, 2, 1])
         # --------- PROPOSAL GENERATION ---------
-        net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu', name=self.name+'_conv1d_1')
-        net = conv1d(input=net, num_filters=128, filter_size=1, bn=True, act='relu', name=self.name+'_conv1d_2')
+        net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu',
+                     name=self.name+'_conv1d_1', bn_momentum=self.bn_momentum)
+        net = conv1d(input=net, num_filters=128, filter_size=1, bn=True, act='relu',
+                     name=self.name+'_conv1d_2', bn_momentum=self.bn_momentum)
         net = conv1d(input=net, num_filters=2+3+self.num_heading_bin*2+self.num_size_cluster*4+self.num_class,
-                     filter_size=1, bn=False, act=None, name=self.name+'_conv1d_3') # (batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
+                     filter_size=1, bn=False, act=None, name=self.name+'_conv1d_3', bn_momentum=self.bn_momentum) # (batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
         print('proposal.shape = ', net.shape)
         end_points['Proposal_net'] = net
 
@@ -892,7 +906,7 @@ class VoteNet(object):
             Number of votes generated from each seed point.
     """
     def __init__(self, num_class, num_points, num_heading_bin, num_size_cluster,
-                 input_feature_dim=4, num_proposal=128, vote_factor=1, sampling='vote_fps', batch_size=1):
+                 input_feature_dim=4, num_proposal=128, vote_factor=1, sampling='vote_fps', batch_size=1, bn_momentum=0.9):
         self.num_class = num_class
         self.num_points = num_points
         self.num_heading_bin = num_heading_bin
@@ -902,15 +916,16 @@ class VoteNet(object):
         self.vote_factor = vote_factor
         self.sampling = sampling
         self.batch_size = batch_size
+        self.bn_momentum=bn_momentum
 
         # init Pointnet2Backbone
-        self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim)
+        self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim, bn_momentum=bn_momentum)
 
         # init VotingModule
-        self.vgen = VotingModule(self.vote_factor, 256, batch_size=batch_size, name='vgen')
+        self.vgen = VotingModule(self.vote_factor, 256, batch_size=batch_size, name='vgen', bn_momentum=bn_momentum)
 
         # init proposal module
-        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, name='pnet')
+        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, name='pnet', bn_momentum=bn_momentum)
 
     def build_input(self):
         self.xyz = fluid.data(name='xyz',
@@ -957,10 +972,6 @@ class VoteNet(object):
                                         shape=[self.batch_size, self.num_points],
                                         dtype='int64',
                                         lod_level=0)
-        # self.mean_size_arr = fluid.data(name='mean_size_arr',
-        #                                 shape=[self.num_class, 3],
-        #                                 dtype='float32',
-        #                                 lod_level=0)
         self.loader = fluid.io.DataLoader.from_generator(
             feed_list=[self.xyz, self.feature, self.center_label, self.heading_class_label, self.heading_residual_label,
                        self.size_class_label, self.size_residual_label, self.sem_cls_label, self.box_label_mask, self.vote_label,
