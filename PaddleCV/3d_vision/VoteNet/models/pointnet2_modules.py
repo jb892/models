@@ -27,8 +27,8 @@ import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
 from paddle.fluid.initializer import Constant, Normal
 # from .ext_op import *
-from ext_op import *
-from loss_helper import *
+from .ext_op import *
+from .loss_helper import *
 # from utils import conv1d
 
 __all__ = ["PointnetSAModuleVotes", "PointnetFPModule", "VoteNet", "VotingModule", "ProposalModule"]
@@ -230,6 +230,11 @@ def conv1d(input,
     :return:
     """
 
+    def _get_kaiming_init():
+        fan_in = input.shape[1]
+        std = (1.0 / fan_in / 3.0) ** 0.5
+        return Normal(0., std, 0.)
+
     # Convert the input tensor from dim 3 to dim 4
     input_4dim = layers.unsqueeze(input, axes=-1)
 
@@ -245,22 +250,23 @@ def conv1d(input,
         assert(isinstance(filter_size, int))
         filter_size = [filter_size, 1]
 
-    param_attr = ParamAttr(name='{}_conv1d_weight'.format(name), )
-    bias_attr = ParamAttr(name='{}_conv1d_bias'.format(name)) if not bn else False
+    param_attr = ParamAttr(name='{}_conv1d_weight'.format(name),
+                           initializer=_get_kaiming_init())
+    bias_attr = ParamAttr(name='{}_conv1d_bias'.format(name),
+                          initializer=Constant(0.0))
 
     out_4dim = layers.conv2d(input=input_4dim,
                              num_filters=num_filters,
                              filter_size=filter_size,
-                             stride=1,
-                             padding=0,
-                             dilation=1,
+                             stride=stride,
+                             padding=padding,
+                             dilation=dilation,
                              groups=groups,
                              param_attr=param_attr,
                              bias_attr=bias_attr,
                              use_cudnn=use_cudnn,
                              name=name,
                              data_format=data_format)
-                             # act=act if not bn else None)
     if bn:
         bn_name = name + '_bn'
         out_4dim = layers.batch_norm(out_4dim,
@@ -270,36 +276,24 @@ def conv1d(input,
                                      bias_attr=ParamAttr(name=bn_name + '_offset'),
                                      moving_mean_name=bn_name + '_mean',
                                      moving_variance_name=bn_name + '_var')
-    if act == "relu":
-        out_4dim = layers.relu(out_4dim)
 
     # Convert the output tensor from dim 4 back to dim 3
     out_3dim = layers.squeeze(out_4dim, [-1])
     return out_3dim
 
-def conv_bn(input, out_channels, bn=True, bn_momentum=0.9, act='relu', name=None, test=True):
+def conv_bn(input, out_channels, bn=True, bn_momentum=0.9, act='relu', name=None):
     def _get_kaiming_init():
         fan_in = input.shape[1]
         std = (1.0 / fan_in / 3.0) ** 0.5
         return Normal(0., std, 0.)
 
-    if test:
-        # conv_weight = layers.create_parameter(dtype='float32',
-        #                                       shape=[],
-        #                                       name='{}_conv_weight'.format(name),
-        #                                       default_initializer=Constant(1.0))
-        # conv_bias = layers.create_parameter(dtype='float32',
-        #                                     shape=[],
-        #                                     name='{}_conv_bias'.format(name),
-        #                                     default_initializer=Constant(1.0))
-        param_attr = ParamAttr(name='{}_conv_weight'.format(name),
-                               initializer=Constant(1.0))
-        bias_attr = ParamAttr(name='{}_conv_bias'.format(name),
-                              initializer=Constant(1.0)) if not bn else None
-    else:
-        param_attr = ParamAttr(name='{}_conv_weight'.format(name),
-                               initializer=_get_kaiming_init())
-        bias_attr = ParamAttr(name='{}_conv_bias'.format(name)) if not bn else None
+    # param_attr = ParamAttr(name='{}_conv_weight'.format(name),
+    #                        initializer=Constant(1.0))
+    # bias_attr = ParamAttr(name='{}_conv_bias'.format(name),
+    #                       initializer=Constant(0.0)) if not bn else None
+    param_attr = ParamAttr(name='{}_conv_weight'.format(name),
+                           initializer=_get_kaiming_init())
+    bias_attr = ParamAttr(name='{}_conv_bias'.format(name)) if not bn else None
 
     out = layers.conv2d(input,
                         num_filters=out_channels,
@@ -390,8 +384,6 @@ def PointnetSAModuleVotes(xyz,
         grouper = GroupAll(use_xyz=use_xyz, ret_grouped_xyz=True)
 
     mlp_spec = mlps
-    if use_xyz and len(mlp_spec) > 0:
-        mlp_spec[0] += 3
 
     if inds is None:
         inds = farthest_point_sampling(xyz, npoint) # [B, M], (M=nsample)
@@ -411,12 +403,9 @@ def PointnetSAModuleVotes(xyz,
 
     # MLP
     # Convert memory layout from 'NHWC' to 'NCHW'
-    grouped_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2]) # out_shape=[B, C, npoint, nsample]
+    grouped_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2])  # out_shape=[B, C, npoint, nsample]
 
     # logger.info('grouped_features.shape: {}'.format(grouped_features.shape))
-    print('grouped_features.shape = ', grouped_features.shape)
-    if end_points is not None:
-        end_points['sa1_gf'] = grouped_features
 
     # for i, num_out_channel in enumerate(mlp_spec):
     grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_m, name=name+'_mlp')
@@ -425,10 +414,10 @@ def PointnetSAModuleVotes(xyz,
 
     # new_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2]) # (B, mlp_spec[-1], npoint, nsample)
 
-    logger.info('new_features.shape: {}'.format(new_features.shape))
+    # logger.info('new_features.shape: {}'.format(new_features.shape))
 
     # Pooling
-    if pooling == 'max': # NCHW format
+    if pooling == 'max':  # NCHW format
         new_features = layers.pool2d(new_features, pool_size=[1, new_features.shape[3]], pool_type='max')
     elif pooling == 'avg':
         new_features = layers.pool2d(new_features, pool_size=[1, new_features.shape[3]], pool_type='avg')
@@ -448,14 +437,8 @@ def PointnetSAModuleVotes(xyz,
 
     # logger.info('new_features.shape: {}'.format(new_features.shape))
 
-    if end_points is not None:
-        end_points['sa1_module_new_features'] = new_features
-
     # Convert new_feature tensor from 'NCW' to 'NWC' format
     new_features = layers.transpose(new_features, perm=[0, 2, 1])
-
-    if end_points is not None:
-        end_points['sa1_module_new_features_T'] = new_features
 
     # logger.info('new_features.shape: {}'.format(new_features.shape))
 
@@ -473,7 +456,9 @@ def PointnetFPModule(unknown,
                      mlps=None,
                      bn=True,
                      bn_m=0.9,
-                     name=None):
+                     name=None,
+                     batch_size=1,
+                     end_points=None):
     """
     :param unknown: (B, n, 3) tensor of the xyz positions of the unknown features
     :param known: (B, m, 3) tensor of the xyz positions of the known features
@@ -485,10 +470,10 @@ def PointnetFPModule(unknown,
     :return new_features: (B, n, mlps[-1]) tensor of the features of the unknown features
     """
 
-    logger.info('FPModule_{} unknown.shape = {}'.format(name, unknown.shape))
-    logger.info('FPModule_{} known.shape = {}'.format(name, known.shape))
+    # logger.info('FPModule_{} unknown.shape = {}'.format(name, unknown.shape))
+    # logger.info('FPModule_{} known.shape = {}'.format(name, known.shape))
     # logger.info('FPModule_{} unknown_feats.shape = {}'.format(name, unknown_feats.shape))
-    logger.info('FPModule_{} known_feats.shape = {}'.format(name, known_feats.shape))
+    # logger.info('FPModule_{} known_feats.shape = {}'.format(name, known_feats.shape))
 
     if known is not None:
         dist, idx = three_nn(unknown, known)  # dist:shape=[B, N, 3], idx:shape=[B, N, 3]
@@ -498,14 +483,12 @@ def PointnetFPModule(unknown,
         norm = layers.reduce_sum(dist_recip, dim=2, keep_dim=True)  # norm:shape=[B, N, 1]
         weight = dist_recip / norm  # weight:shape=[B, N, 3]
         weight.stop_gradient = True
-        logger.info('FPModule_{} weight.shape = {}'.format(name, weight.shape))
+
+        # known_feats.shape = [B, M, C], weight.shape = [B, N, 3], idx.shape = [B, N, 3]
         interpolated_feats = three_interp(input=known_feats, weight=weight, idx=idx)  # out_shape=[B, N, C]
     else:
         interpolated_feats = layers.expand(known_feats,
-                                           expand_times=[known_feats.shape[0], known_feats.shape[1], unknown.shape[1]])
-
-    logger.info('FPModule_{} interpolated_feats.shape = {}'.format(name, interpolated_feats.shape))
-    logger.info('FPModule_{} unknown_feats.shape = {}'.format(name, unknown_feats.shape))
+                                           expand_times=[batch_size, unknown.shape[1], known_feats.shape[2]]) # [B, N, C]
 
     if unknown_feats is not None:
         new_features = layers.concat([interpolated_feats, unknown_feats], axis=-1)  # shape=(B, N, C2 + C1)
@@ -526,8 +509,9 @@ def PointnetFPModule(unknown,
 # Checked!
 class Pointnet2Backbone(object):
 
-    def __init__(self,  input_feature_dim=0):
+    def __init__(self,  input_feature_dim=0, batch_size=1):
         self.input_feature_dim = input_feature_dim
+        self.batch_size = batch_size
 
     def build(self, xyz, features=None, end_points=None):
         """
@@ -549,7 +533,7 @@ class Pointnet2Backbone(object):
             npoint=2048,
             radius=0.2,
             nsample=64,
-            mlps=[self.input_feature_dim, 64, 64, 128],
+            mlps=[64, 64, 128],
             use_xyz=True,
             normalize_xyz=True,
             name='sa_layer1',
@@ -561,9 +545,9 @@ class Pointnet2Backbone(object):
         end_points['sa1_xyz'] = l1_xyz
         end_points['sa1_features'] = l1_feature
 
-        print('sa1_inds.shape', l1_inds.shape)
-        print('sa1_xyz.shape', l1_xyz.shape)
-        print('sa1_features.shape', l1_feature.shape)
+        # print('sa1_inds.shape', l1_inds.shape)
+        # print('sa1_xyz.shape', l1_xyz.shape)
+        # print('sa1_features.shape', l1_feature.shape)
 
         l2_xyz, l2_feature, l2_inds = PointnetSAModuleVotes(
             xyz=l1_xyz,
@@ -571,15 +555,15 @@ class Pointnet2Backbone(object):
             npoint=1024,
             radius=0.4,
             nsample=32,
-            mlps=[128, 128, 128, 256],
+            mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
             name='sa_layer2'
         )
 
-        print('sa2_inds.shape', l2_inds.shape)
-        print('sa2_xyz.shape', l2_xyz.shape)
-        print('sa2_features.shape', l2_feature.shape)
+        # print('sa2_inds.shape', l2_inds.shape)
+        # print('sa2_xyz.shape', l2_xyz.shape)
+        # print('sa2_features.shape', l2_feature.shape)
 
         # Save SA2 layer output result
         end_points['sa2_inds'] = l2_inds
@@ -592,7 +576,7 @@ class Pointnet2Backbone(object):
             npoint=512,
             radius=0.8,
             nsample=16,
-            mlps=[256, 128, 128, 256],
+            mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
             name='sa_layer3'
@@ -602,8 +586,8 @@ class Pointnet2Backbone(object):
         end_points['sa3_xyz'] = l3_xyz
         end_points['sa3_features'] = l3_feature
 
-        print('sa3_xyz.shape', l3_xyz.shape)
-        print('sa3_features.shape', l3_feature.shape)
+        # print('sa3_xyz.shape', l3_xyz.shape)
+        # print('sa3_features.shape', l3_feature.shape)
 
         l4_xyz, l4_feature, l4_inds = PointnetSAModuleVotes(
             xyz=l3_xyz,
@@ -611,7 +595,7 @@ class Pointnet2Backbone(object):
             npoint=256,
             radius=1.2,
             nsample=16,
-            mlps=[256, 128, 128, 256],
+            mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
             name='sa_layer4'
@@ -621,14 +605,11 @@ class Pointnet2Backbone(object):
         end_points['sa4_xyz'] = xyz
         end_points['sa4_features'] = features
 
-        print('sa4_xyz.shape', l4_xyz.shape)
-        print('sa4_features.shape', l4_feature.shape)
-
         # --------- 2 FEATURE UPSAMPLING LAYERS --------
         fp1_feature = PointnetFPModule(unknown=l3_xyz, known=l4_xyz, unknown_feats=l3_feature, known_feats=l4_feature,
-                                      mlps=[256+256, 256, 256], name='fp_layer1')
+                                      mlps=[256, 256], name='fp_layer1', batch_size=self.batch_size, end_points=end_points)
         fp2_feature = PointnetFPModule(unknown=l2_xyz, known=l3_xyz, unknown_feats=l2_feature, known_feats=fp1_feature,
-                                       mlps=[256+256, 256, 256], name='fp_layer2')
+                                       mlps=[256, 256], name='fp_layer2', batch_size=self.batch_size)
 
         # Save fp layer output
         end_points['fp2_features'] = fp2_feature
@@ -636,14 +617,12 @@ class Pointnet2Backbone(object):
 
         num_of_seeds = end_points['fp2_xyz'].shape[1]
 
-        # print('Num of seeds: {}'.format(num_of_seeds))
-
         end_points['fp2_inds'] = end_points['sa1_inds'][:, 0:num_of_seeds] # indices among the entire input point clouds
         return end_points
 
 # Checked!
 class VotingModule(object):
-    def __init__(self, vote_factor, seed_feature_dim, name=None):
+    def __init__(self, vote_factor, seed_feature_dim, batch_size=1, name=None):
         """ Votes generation from seed point features.
 
         Args:
@@ -658,42 +637,46 @@ class VotingModule(object):
         self.in_dim = seed_feature_dim
         self.out_dim = self.in_dim  # due to residual feature, in_dim has to be == out_dim
         self.name = name
+        self.batch_size = batch_size
 
-    def build(self, seed_xyz, seed_features):
+    def build(self, seed_xyz, seed_features, end_points=None):
         """
         Arguments:
-            seed_xyz: (batch_size, num_seed, 3) Pytorch tensor
-            seed_features: (batch_size, feature_dim, num_seed) Pytorch tensor
+            seed_xyz: (batch_size, num_seed, 3) Pytorch tensor - NWC
+            seed_features: (batch_size, feature_dim, num_seed) - NCW
         Returns:
             vote_xyz: (batch_size, num_seed*vote_factor, 3)
             vote_features: (batch_size, vote_feature_dim, num_seed*vote_factor)
         """
-        batch_size = seed_xyz.shape[0]
+        batch_size = self.batch_size
         num_seed = seed_xyz.shape[1]
         num_vote = num_seed * self.vote_factor
 
-        net = conv1d(seed_features, self.out_dim, filter_size=1, name=self.name+'_conv1d_1')
-        net = conv1d(net, self.out_dim, filter_size=1, name=self.name+'_conv1d_2')
+        net = conv1d(seed_features, self.in_dim, filter_size=1, name=self.name+'_conv1d_1')
+        net = conv1d(net, self.in_dim, filter_size=1, name=self.name+'_conv1d_2')
         net = conv1d(net,
                      num_filters=(3+self.out_dim)*self.vote_factor,
                      filter_size=1,
                      bn=False,
                      act=None,
-                     name=self.name+'_conv1d_3') # (batch_size, (3+out_dim)*vote_factor, num_seed)
+                     name=self.name+'_conv1d_3')  # (batch_size, (3+out_dim)*vote_factor, num_seed)
 
         net = layers.transpose(net, perm=[0, 2, 1])
         net = layers.reshape(net, shape=[batch_size, num_seed, self.vote_factor, 3+self.out_dim])
         offset = net[:, :, :, 0:3]
         vote_xyz = layers.unsqueeze(seed_xyz, 2) + offset
-        vote_xyz = layers.reshape(vote_xyz, shape=[batch_size, num_vote, 3])
-        # vote_xyz.shape = [B, num_vote, 3]
+        vote_xyz = layers.reshape(vote_xyz, shape=[batch_size, num_vote, 3])  # vote_xyz.shape = [B, num_vote, 3]
 
-        residual_features = net[:, :, :, 3:] # (batch_size, num_seed, vote_factor, out_dim)
+        residual_features = net[:, :, :, 3:]  # (batch_size, num_seed, vote_factor, out_dim)
 
         vote_features = layers.unsqueeze(layers.transpose(seed_features, perm=[0, 2, 1]), 2) + residual_features
         vote_features = layers.reshape(vote_features, shape=[batch_size, num_vote, self.out_dim])
         vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
         # vote_features.shape = [B, out_dim, num_vote]
+
+        # print('vote_features.shape = ', vote_features.shape)
+        # if end_points is not None:
+        #     end_points['voting_features'] = vote_features
 
         return vote_xyz, vote_features
 
@@ -709,23 +692,24 @@ class ProposalModule(object):
         self.seed_feat_dim = seed_feat_dim
         self.name = name
 
-    def build(self, xyz, features, end_points, mean_size_arr=None):
+    def build(self, xyz, features, end_points, batch_size=1, mean_size_arr=None):
         """
         Args:
             xyz: (B,K,3)
-            features: (B,k,c)
+            features: (B,C,K)
         Returns:
             scores: (B,num_proposal,2+3+NH*2+NS*4)
         """
+        features_t = layers.transpose(features, perm=[0, 2, 1])
         if self.sampling == 'vote_fps':
             # Farthest point sampling (FPS) on votes
             xyz, features, fps_inds = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features,
+                features=features_t,
                 npoint=self.num_proposal,
                 radius=0.3,
                 nsample=16,
-                mlps=[self.seed_feat_dim, 128, 128, 128],
+                mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
                 name=self.name+'_sa_layer'
@@ -737,12 +721,12 @@ class ProposalModule(object):
             sample_inds = farthest_point_sampling(end_points['seed_xyz'], self.num_proposal)
             xyz, features, _ = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features,
+                features=features_t,
                 inds=sample_inds,
                 npoint=self.num_proposal,
                 radius=0.3,
                 nsample=16,
-                mlps=[self.seed_feat_dim, 128, 128, 128],
+                mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
                 name=self.name+'_sa_layer'
@@ -750,16 +734,16 @@ class ProposalModule(object):
         elif self.sampling == 'random':
             # Random sampling from the votes
             num_seed = end_points['seed_xyz'].shape[1]
-            batch_size = end_points['seed_xyz'].shape[0]
+            batch_size = batch_size
             sample_inds = fluid.layers.randint(0, num_seed, shape=(batch_size, self.num_proposal), dtype='int32')
             xyz, features, _ = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features,
+                features=features_t,
                 inds=sample_inds,
                 npoint=self.num_proposal,
                 radius=0.3,
                 nsample=16,
-                mlps=[self.seed_feat_dim, 128, 128, 128],
+                mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
                 name=self.name+'_sa_layer'
@@ -770,51 +754,56 @@ class ProposalModule(object):
         end_points['aggregated_vote_xyz'] = xyz # (batch_size, num_proposal, 3)
         end_points['aggregated_vote_inds'] = sample_inds # (batch_size, num_proposal,) # should be 0,1,2,...,num_proposal
 
-        # Convert tensor from 'NHWC' to 'NCHW' format
+        # Convert tensor from 'NWC' to 'NCW' format
         features = layers.transpose(features, perm=[0, 2, 1])
         # --------- PROPOSAL GENERATION ---------
         net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu', name=self.name+'_conv1d_1')
         net = conv1d(input=net, num_filters=128, filter_size=1, bn=True, act='relu', name=self.name+'_conv1d_2')
         net = conv1d(input=net, num_filters=2+3+self.num_heading_bin*2+self.num_size_cluster*4+self.num_class,
-                     filter_size=1, bn=False, act=None, name=self.name+'_conv1d_3')
+                     filter_size=1, bn=False, act=None, name=self.name+'_conv1d_3') # (batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
+        print('proposal.shape = ', net.shape)
+        end_points['Proposal_net'] = net
 
-        # Convert tensor from 'NCHW' to 'NHWC' format
+        # Convert tensor from 'NCW' to 'NWC' format
         net = layers.transpose(net, perm=[0, 2, 1])
 
         end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
-                                   mean_size_arr)
+                                   mean_size_arr, batch_size)
         return end_points
 
 # Checked!
-def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster, mean_size_arr=None):
+def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster, mean_size_arr=None, batch_size=1):
+    """
+    :param net: (batch_size, 1024, ..)
+    :param end_points:
+    :param num_class:
+    :param num_heading_bin:
+    :param num_size_cluster:
+    :param mean_size_arr:
+    :param batch_size:
+    :return:
+    """
 
-    # logger.info('net.shape: {}'.format(net.shape))
+    # num_proposal should be 1024
+    num_proposal = net.shape[1]
 
-    net_transposed = net #layers.transpose(net, perm=[0, 2, 1])  # (batch_size, 1024, ..)
-
-    # logger.info('net_transposed.shape: {}'.format(net_transposed.shape))
-
-    batch_size = net_transposed.shape[0]
-    num_proposal = net_transposed.shape[1]
-    # print('num_proposal: {}, should be 1024'.format(num_proposal))
-
-    objectness_scores = net_transposed[:, :, 0:2]
+    objectness_scores = net[:, :, 0:2]
     end_points['objectness_scores'] = objectness_scores
 
     base_xyz = end_points['aggregated_vote_xyz']  # (batch_size, num_proposal, 3)
-    center = base_xyz + net_transposed[:, :, 2:5]  # (batch_size, num_proposal, 3)
+    center = base_xyz + net[:, :, 2:5]  # (batch_size, num_proposal, 3)
     end_points['center'] = center
 
-    heading_scores = net_transposed[:, :, 5:5 + num_heading_bin]
-    heading_residuals_normalized = net_transposed[:, :, 5 + num_heading_bin:5 + num_heading_bin * 2]
+    heading_scores = net[:, :, 5:5 + num_heading_bin]
+    heading_residuals_normalized = net[:, :, 5 + num_heading_bin:5 + num_heading_bin * 2]
     end_points['heading_scores'] = heading_scores  # Bxnum_proposalxnum_heading_bin
     end_points[
         'heading_residuals_normalized'] = heading_residuals_normalized  # Bxnum_proposalxnum_heading_bin (should be -1 to 1)
     end_points['heading_residuals'] = heading_residuals_normalized * (
                 np.pi / num_heading_bin)  # Bxnum_proposalxnum_heading_bin
 
-    size_scores = net_transposed[:, :, 5 + num_heading_bin * 2:5 + num_heading_bin * 2 + num_size_cluster]
-    size_residuals_normalized = layers.reshape(net_transposed[:, :,
+    size_scores = net[:, :, 5 + num_heading_bin * 2:5 + num_heading_bin * 2 + num_size_cluster]
+    size_residuals_normalized = layers.reshape(net[:, :,
                                 5 + num_heading_bin * 2 + num_size_cluster:5 + num_heading_bin * 2 + num_size_cluster * 4],
                                 shape=[batch_size, num_proposal, num_size_cluster, 3])  # Bxnum_proposalxnum_size_clusterx3
     end_points['size_scores'] = size_scores
@@ -825,7 +814,7 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
         mean_size_arr = layers.assign(np.array(mean_size_arr, dtype='float32'))
     end_points['size_residuals'] = size_residuals_normalized * layers.unsqueeze(layers.unsqueeze(mean_size_arr, 0), 0)
 
-    sem_cls_scores = net_transposed[:, :, 5 + num_heading_bin * 2 + num_size_cluster * 4:]  # Bxnum_proposalx10
+    sem_cls_scores = net[:, :, 5 + num_heading_bin * 2 + num_size_cluster * 4:]  # Bxnum_proposalx10
     end_points['sem_cls_scores'] = sem_cls_scores
     return end_points
 
@@ -846,7 +835,7 @@ class testVoteNet(object):
         self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim)
 
         # init VotingModule
-        self.vgen = VotingModule(self.vote_factor, 256, name='vgen')
+        self.vgen = VotingModule(self.vote_factor, 256, batch_size=batch_size, name='vgen')
 
         # init proposal module
         self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, name='pnet')
@@ -855,7 +844,6 @@ class testVoteNet(object):
         end_points = {}
 
         # Backbone point feature learning
-        # seed_xyz, seed_features, seed_inds = self.backbone_net(input_xyz, input_feature)
         end_points = self.backbone_net.build(xyz, end_points=end_points)
 
         # =========== Hough voting ==========
@@ -866,18 +854,22 @@ class testVoteNet(object):
         end_points['seed_inds'] = end_points['fp2_inds']
 
         # Convert features tensor from 'NWC' to 'NCW' format
-        features = layers.transpose(features, perm=[0, 2, 1])
-        vote_xyz, vote_features = self.vgen.build(xyz, features)  # vote_features.shape = [B, out_dim, num_vote]
+        features = layers.transpose(features, perm=[0, 2, 1])  # NCW
+        vote_xyz, vote_features = self.vgen.build(xyz, features, end_points)  # vote_features.shape = [B, out_dim, num_vote]
         features_norm = layers.sqrt(layers.reduce_sum(layers.pow(vote_features, factor=2.0), dim=1, keep_dim=False))
         vote_features = vote_features / layers.unsqueeze(features_norm, 1)  # features_norm.shape = [B, 1, num_vote]
+
         # Convert features tensor from 'NCW' to 'NWC'
-        vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
+        # vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
+
+        print('vote_features.shape = ', vote_features.shape)
+        # end_points['vote_features'] = features_norm
 
         end_points['vote_xyz'] = vote_xyz
-        end_points['vote_features'] = vote_features
+        end_points['vote_features'] = vote_features # [B, C, K] NCW format
 
         # Vote aggregation and detection
-        end_points = self.pnet.build(vote_xyz, vote_features, end_points, mean_size_arr)
+        end_points = self.pnet.build(vote_xyz, vote_features, end_points, batch_size=self.batch_size, mean_size_arr=mean_size_arr)
 
         return end_points
 
@@ -915,7 +907,7 @@ class VoteNet(object):
         self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim)
 
         # init VotingModule
-        self.vgen = VotingModule(self.vote_factor, 256, name='vgen')
+        self.vgen = VotingModule(self.vote_factor, 256, batch_size=batch_size, name='vgen')
 
         # init proposal module
         self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, name='pnet')
@@ -984,7 +976,6 @@ class VoteNet(object):
         end_points = {}
 
         # Backbone point feature learning
-        # seed_xyz, seed_features, seed_inds = self.backbone_net(input_xyz, input_feature)
         end_points = self.backbone_net.build(self.xyz, self.feature, end_points)
 
         # =========== Hough voting ==========
@@ -999,14 +990,15 @@ class VoteNet(object):
         vote_xyz, vote_features = self.vgen.build(xyz, features) # vote_features.shape = [B, out_dim, num_vote]
         features_norm = layers.sqrt(layers.reduce_sum(layers.pow(vote_features, factor=2.0), dim=1, keep_dim=False))
         vote_features = vote_features / layers.unsqueeze(features_norm, 1) # features_norm.shape = [B, 1, num_vote]
+
         # Convert features tensor from 'NCW' to 'NWC'
-        vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
+        # vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
 
         end_points['vote_xyz'] = vote_xyz
         end_points['vote_features'] = vote_features
 
         # Vote aggregation and detection
-        end_points = self.pnet.build(vote_xyz, vote_features, end_points)#, self.mean_size_arr)
+        end_points = self.pnet.build(vote_xyz, vote_features, end_points, batch_size=self.batch_size)#, self.mean_size_arr)
 
         config = {
             'num_heading_bin': self.num_heading_bin,
@@ -1178,38 +1170,15 @@ def test_VoteNet():
 
     out = exe.run(
         feed={'xyz': xyz_val},
-        fetch_list=[end_points['sa1_gf'], end_points['sa1_module_new_features_T']]
-                    # end_points['sa1_gf_in'],
-                    # end_points['sa1_gf'],
-                    # [end_points['sa1_inds'],
-                    # end_points['sa1_xyz'],
-                    # end_points['sa1_features'],
-                    # end_points['sa2_inds'],
-                    # end_points['sa2_xyz'],
-                    # end_points['sa2_features'],
-                    # end_points['sa3_xyz'],
-                    # end_points['sa3_features'],
-                    # end_points['sa4_xyz'],
-                    # end_points['sa4_features'],
-                    # end_points['fp2_features'],
-                    # end_points['fp2_xyz'],
-                    # end_points['fp2_inds'],
-                    # end_points['seed_inds'],
-                    # end_points['seed_xyz'],
-                    # end_points['seed_features'],
-                    # end_points['vote_xyz'],
-                    # end_points['vote_features'],
-                    # end_points['aggregated_vote_xyz'],
-                    # end_points['aggregated_vote_inds'],
-                    # end_points['objectness_scores'],
-                    # end_points['center'],
-                    # end_points['heading_scores'],
-                    # end_points['heading_residuals_normalized'],
-                    # end_points['heading_residuals'],
-                    # end_points['size_scores'],
-                    # end_points['size_residuals_normalized'],
-                    # end_points['size_residuals'],
-                    # end_points['sem_cls_scores']]
+        fetch_list=[end_points['objectness_scores'],
+                    end_points['center'],
+                    end_points['heading_scores'],
+                    end_points['heading_residuals_normalized'],
+                    end_points['heading_residuals'],
+                    end_points['size_scores'],
+                    end_points['size_residuals_normalized'],
+                    end_points['size_residuals'],
+                    end_points['sem_cls_scores']]
     )
 
     print(out)

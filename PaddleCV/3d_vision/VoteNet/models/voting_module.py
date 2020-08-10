@@ -40,7 +40,7 @@ class VotingModule(object):
         """
         self.vote_factor = vote_factor
         self.in_dim = seed_feature_dim
-        self.out_dim = self.in_dim # due to residual feature, in_dim has to be == out_dim
+        self.out_dim = self.in_dim  # due to residual feature, in_dim has to be == out_dim
 
     def build(self, seed_xyz, seed_features):
         """
@@ -61,7 +61,7 @@ class VotingModule(object):
                      num_filters=(3+self.out_dim)*self.vote_factor,
                      filter_size=1,
                      bn=False,
-                     act=None) # (batch_size, (3+out_dim)*vote_factor, num_seed)
+                     act=None)  # (batch_size, (3+out_dim)*vote_factor, num_seed)
 
         net = fluid.layers.transpose(net, perm=[0, 2, 1])
         net = fluid.layers.reshape(net, shape=[batch_size, num_seed, self.vote_factor, 3+self.out_dim])

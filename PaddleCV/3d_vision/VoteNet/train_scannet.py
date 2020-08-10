@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument(
         '--batch_size',
         type=int,
-        default=4,
+        default=8,
         help='training batch size, default 8')
     parser.add_argument(
         '--num_points',

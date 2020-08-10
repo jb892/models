@@ -18,6 +18,7 @@ import paddle.fluid as fluid
 file_dir = os.path.dirname(os.path.abspath(__file__))
 fluid.load_op_library(os.path.join(file_dir, 'src/pointnet_lib.so'))
 
+
 from paddle.fluid.layer_helper import LayerHelper
 
 __all__ = ['three_nn', 'three_interp', 'query_ball', 'gather_point',
