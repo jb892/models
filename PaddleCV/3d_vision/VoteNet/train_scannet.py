@@ -171,7 +171,7 @@ def parse_args():
     parser.add_argument(
         '--resume',
         type=str,
-        default=None,
+        default='checkpoints_seg/30/votenet_det',
         help='path to resume training based on previous checkpoints. '
              'None for not resuming any checkpoints.')
     parser.add_argument(
@@ -310,6 +310,7 @@ def train():
     exe = fluid.Executor(place)
     exe.run(startup)
 
+    start_epoch = 0
     if args.resume:
         if not os.path.isdir(args.resume):
             assert os.path.exists("{}.pdparams".format(args.resume)), \
@@ -317,6 +318,7 @@ def train():
             assert os.path.exists("{}.pdopt".format(args.resume)), \
                 "Given resume optimizer state {}.pdopt not exist.".format(args.resume)
         fluid.load(train_prog, args.resume, exe)
+        start_epoch = int(args.resume.split('/')[1]) + 1
 
     build_strategy = fluid.BuildStrategy()
     build_strategy.memory_optimize = False
@@ -354,7 +356,7 @@ def train():
     # ce_time = 0
     # ce_loss = []
 
-    for epoch_id in range(args.epoch):
+    for epoch_id in range(start_epoch, args.epoch):
         try:
             train_loader.start()
             train_iter = 0
