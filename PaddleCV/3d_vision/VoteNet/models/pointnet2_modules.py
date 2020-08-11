@@ -293,7 +293,7 @@ def conv_bn(input, out_channels, bn=True, bn_momentum=0.9, act='relu', name=None
     #                       initializer=Constant(0.0)) if not bn else None
     param_attr = ParamAttr(name='{}_weight'.format(name),
                            initializer=_get_kaiming_init())
-    bias_attr = ParamAttr(name='{}_bias'.format(name)) if not bn else None
+    bias_attr = ParamAttr(name='{}_bias'.format(name)) if not bn else False
 
     out = layers.conv2d(input,
                         num_filters=out_channels,

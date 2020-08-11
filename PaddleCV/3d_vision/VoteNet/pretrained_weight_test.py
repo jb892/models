@@ -162,20 +162,21 @@ def demo():
     exe.run(startup)
 
     # ==== Load weight param and restore ====
-    # weight_dict = {}
-    # with h5py.File(args.weight_file, 'r') as f:
-    #     for key in f.keys():
-    #         print(key)
-    #         weight_dict[key] = np.array(f[key], dtype=np.float32)
-    #     f.close()
+    weight_dict = {}
+    with h5py.File(args.weight_file, 'r') as f:
+        for key in f.keys():
+            print(key)
+            weight_dict[key] = np.array(f[key], dtype=np.float32)
+        f.close()
 
     for block in infer_prog.blocks:
         for param in block.all_parameters():
             print(param.name)
+            if 'b_0' not in param.name:
+                continue
             pd_var = fluid.global_scope().find_var(param.name)
             pd_param = pd_var.get_tensor()
             print(np.array(pd_param))
-            break
 
             # pd_var = fluid.global_scope().find_var(param.name)
             # pd_param = pd_var.get_tensor()
