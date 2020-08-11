@@ -208,7 +208,8 @@ def conv1d(input,
            groups=None,
            use_cudnn=True,
            act='relu',
-           name=None,
+           conv_name=None,
+           bn_name=None,
            data_format="NCHW"):
     """
 
@@ -250,9 +251,9 @@ def conv1d(input,
         assert(isinstance(filter_size, int))
         filter_size = [filter_size, 1]
 
-    param_attr = ParamAttr(name='{}_weight'.format(name),
+    param_attr = ParamAttr(name='{}.weight'.format(conv_name),
                            initializer=_get_kaiming_init())
-    bias_attr = ParamAttr(name='{}_bias'.format(name),
+    bias_attr = ParamAttr(name='{}.bias'.format(conv_name),
                           initializer=Constant(0.0))
 
     out_4dim = layers.conv2d(input=input_4dim,
@@ -265,17 +266,15 @@ def conv1d(input,
                              param_attr=param_attr,
                              bias_attr=bias_attr,
                              use_cudnn=use_cudnn,
-                             name=name,
                              data_format=data_format)
     if bn:
-        bn_name = name + '_bn'
         out_4dim = layers.batch_norm(out_4dim,
                                      act=act,
                                      momentum=bn_momentum,
-                                     param_attr=ParamAttr(name=bn_name + '_weight'),
-                                     bias_attr=ParamAttr(name=bn_name + '_bias'),
-                                     moving_mean_name=bn_name + '_mean',
-                                     moving_variance_name=bn_name + '_var')
+                                     param_attr=ParamAttr(name=bn_name + '.weight'),
+                                     bias_attr=ParamAttr(name=bn_name + '.bias'),
+                                     moving_mean_name=bn_name + '.mean',
+                                     moving_variance_name=bn_name + '.var')
 
     # Convert the output tensor from dim 4 back to dim 3
     out_3dim = layers.squeeze(out_4dim, [-1])
@@ -291,9 +290,9 @@ def conv_bn(input, out_channels, bn=True, bn_momentum=0.9, act='relu', name=None
     #                        initializer=Constant(1.0))
     # bias_attr = ParamAttr(name='{}_conv_bias'.format(name),
     #                       initializer=Constant(0.0)) if not bn else None
-    param_attr = ParamAttr(name='{}_weight'.format(name),
+    param_attr = ParamAttr(name=name+'.conv.weight',
                            initializer=_get_kaiming_init())
-    bias_attr = ParamAttr(name='{}_bias'.format(name)) if not bn else False
+    bias_attr = ParamAttr(name=name+'.conv.bias') if not bn else False
 
     out = layers.conv2d(input,
                         num_filters=out_channels,
@@ -305,21 +304,21 @@ def conv_bn(input, out_channels, bn=True, bn_momentum=0.9, act='relu', name=None
                         bias_attr=bias_attr,
                         act=act if not bn else None)
     if bn:
-        bn_name = name + "_bn"
+        bn_name = name + ".bn"
         out = layers.batch_norm(out,
                                 act=act,
                                 momentum=bn_momentum,
-                                param_attr=ParamAttr(name=bn_name + "_weight"),
-                                bias_attr=ParamAttr(name=bn_name + "_bias"),
-                                moving_mean_name=bn_name + '_mean',
-                                moving_variance_name=bn_name + '_var')
+                                param_attr=ParamAttr(name=bn_name + ".bn.weight"),
+                                bias_attr=ParamAttr(name=bn_name + ".bn.bias"),
+                                moving_mean_name=bn_name + '.bn.mean',
+                                moving_variance_name=bn_name + '.bn.var')
 
     return out
 
 def MLP(features, out_channels_list, bn=True, bn_momentum=0.9, act='relu', name=None):
     out = features
     for i, out_channels in enumerate(out_channels_list):
-        out = conv_bn(out, out_channels, bn=bn, act=act, bn_momentum=bn_momentum, name=name + "_conv2d_{}".format(i))
+        out = conv_bn(out, out_channels, bn=bn, act=act, bn_momentum=bn_momentum, name=name + ".layer{}".format(i))
     return out
 
 # Checked!
@@ -408,7 +407,7 @@ def PointnetSAModuleVotes(xyz,
     # logger.info('grouped_features.shape: {}'.format(grouped_features.shape))
 
     # for i, num_out_channel in enumerate(mlp_spec):
-    grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_momentum, name=name+'_mlp')
+    grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_momentum, name=name+'.mlp_module')
 
     new_features = grouped_features
 
@@ -509,7 +508,7 @@ def PointnetFPModule(unknown,
 # Checked!
 class Pointnet2Backbone(object):
 
-    def __init__(self,  input_feature_dim=0, batch_size=1, bn_momentum=0.9, name='backbone'):
+    def __init__(self,  input_feature_dim=0, batch_size=1, bn_momentum=0.9, name=None):
         self.input_feature_dim = input_feature_dim
         self.batch_size = batch_size
         self.bn_momentum = bn_momentum
@@ -538,7 +537,7 @@ class Pointnet2Backbone(object):
             mlps=[64, 64, 128],
             use_xyz=True,
             normalize_xyz=True,
-            name=self.name+'_sa_layer1',
+            name=self.name+'.sa1',
             end_points=end_points,
             bn_momentum=self.bn_momentum
         )
@@ -561,7 +560,7 @@ class Pointnet2Backbone(object):
             mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
-            name=self.name+'_sa_layer2',
+            name=self.name+'.sa2',
             bn_momentum=self.bn_momentum
         )
 
@@ -583,7 +582,7 @@ class Pointnet2Backbone(object):
             mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
-            name=self.name+'_sa_layer3',
+            name=self.name+'.sa3',
             bn_momentum=self.bn_momentum
         )
 
@@ -603,7 +602,7 @@ class Pointnet2Backbone(object):
             mlps=[128, 128, 256],
             use_xyz=True,
             normalize_xyz=True,
-            name=self.name+'_sa_layer4',
+            name=self.name+'.sa4',
             bn_momentum=self.bn_momentum
         )
 
@@ -613,10 +612,10 @@ class Pointnet2Backbone(object):
 
         # --------- 2 FEATURE UPSAMPLING LAYERS --------
         fp1_feature = PointnetFPModule(unknown=l3_xyz, known=l4_xyz, unknown_feats=l3_feature, known_feats=l4_feature,
-                                      mlps=[256, 256], name=self.name+'_fp_layer1', batch_size=self.batch_size, end_points=end_points,
+                                      mlps=[256, 256], name=self.name+'.fp1', batch_size=self.batch_size, end_points=end_points,
                                        bn_momentum=self.bn_momentum)
         fp2_feature = PointnetFPModule(unknown=l2_xyz, known=l3_xyz, unknown_feats=l2_feature, known_feats=fp1_feature,
-                                       mlps=[256, 256], name=self.name+'_fp_layer2', batch_size=self.batch_size, bn_momentum=self.bn_momentum)
+                                       mlps=[256, 256], name=self.name+'.fp2', batch_size=self.batch_size, bn_momentum=self.bn_momentum)
 
         # Save fp layer output
         end_points['fp2_features'] = fp2_feature
@@ -660,14 +659,14 @@ class VotingModule(object):
         num_seed = seed_xyz.shape[1]
         num_vote = num_seed * self.vote_factor
 
-        net = conv1d(seed_features, self.in_dim, filter_size=1, name=self.name+'_conv1d_0', bn_momentum=self.bn_momentum)
-        net = conv1d(net, self.in_dim, filter_size=1, name=self.name+'_conv1d_1', bn_momentum=self.bn_momentum)
+        net = conv1d(seed_features, self.in_dim, filter_size=1, conv_name=self.name+'.conv1', bn_name=self.name+'.bn1', bn_momentum=self.bn_momentum)
+        net = conv1d(net, self.in_dim, filter_size=1, conv_name=self.name+'.conv2', bn_name=self.name+'.bn2', bn_momentum=self.bn_momentum)
         net = conv1d(net,
                      num_filters=(3+self.out_dim)*self.vote_factor,
                      filter_size=1,
                      bn=False,
                      act=None,
-                     name=self.name+'_conv1d_2')  # (batch_size, (3+out_dim)*vote_factor, num_seed)
+                     conv_name=self.name+'.conv3')  # (batch_size, (3+out_dim)*vote_factor, num_seed)
 
         net = layers.transpose(net, perm=[0, 2, 1])
         net = layers.reshape(net, shape=[batch_size, num_seed, self.vote_factor, 3+self.out_dim])
@@ -722,7 +721,7 @@ class ProposalModule(object):
                 mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
-                name=self.name+'_sa_layer',
+                name=self.name+'.vote_aggregation',
                 bn_momentum=self.bn_momentum
             )
             sample_inds = fps_inds
@@ -740,7 +739,7 @@ class ProposalModule(object):
                 mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
-                name=self.name+'_sa_layer',
+                name=self.name+'.vote_aggregation',
                 bn_momentum=self.bn_momentum
             )
         elif self.sampling == 'random':
@@ -758,7 +757,7 @@ class ProposalModule(object):
                 mlps=[128, 128, 128],
                 use_xyz=True,
                 normalize_xyz=True,
-                name=self.name+'_sa_layer',
+                name=self.name+'.vote_aggregation',
                 bn_momentum=self.bn_momentum
             )
         else:
@@ -771,13 +770,16 @@ class ProposalModule(object):
         features = layers.transpose(features, perm=[0, 2, 1])
         # --------- PROPOSAL GENERATION ---------
         net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu',
-                     name=self.name+'_conv1d_0', bn_momentum=self.bn_momentum)
+                     conv_name=self.name+'.conv1', bn_name=self.name+'.bn1', bn_momentum=self.bn_momentum)
         net = conv1d(input=net, num_filters=128, filter_size=1, bn=True, act='relu',
-                     name=self.name+'_conv1d_1', bn_momentum=self.bn_momentum)
-        net = conv1d(input=net, num_filters=2+3+self.num_heading_bin*2+self.num_size_cluster*4+self.num_class,
-                     filter_size=1, bn=False, act=None, name=self.name+'_conv1d_2', bn_momentum=self.bn_momentum) # (batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
-        # print('proposal.shape = ', net.shape)
-        # end_points['Proposal_net'] = net
+                     conv_name=self.name+'.conv2', bn_name=self.name+'.bn2', bn_momentum=self.bn_momentum)
+        net = conv1d(input=net,
+                     num_filters=2+3+self.num_heading_bin*2+self.num_size_cluster*4+self.num_class,
+                     filter_size=1,
+                     bn=False,
+                     act=None,
+                     conv_name=self.name+'.conv3',
+                     bn_momentum=self.bn_momentum) #(batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
 
         # Convert tensor from 'NCW' to 'NWC' format
         net = layers.transpose(net, perm=[0, 2, 1])
@@ -922,13 +924,13 @@ class VoteNet(object):
         self.bn_momentum=bn_momentum
 
         # init Pointnet2Backbone
-        self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim, bn_momentum=bn_momentum)
+        self.backbone_net = Pointnet2Backbone(input_feature_dim=input_feature_dim, bn_momentum=bn_momentum, name='backbone_net')
 
         # init VotingModule
-        self.vgen = VotingModule(self.vote_factor, 256, batch_size=batch_size, name='vgen', bn_momentum=bn_momentum)
+        self.vgen = VotingModule(self.vote_factor, 256, batch_size=batch_size, bn_momentum=bn_momentum, name='vgen')
 
         # init proposal module
-        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, name='pnet', bn_momentum=bn_momentum)
+        self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, bn_momentum=bn_momentum, name='pnet')
 
     def build_input(self):
         self.xyz = fluid.data(name='xyz',

@@ -105,8 +105,41 @@ def parse_args():
         type=bool,
         default=False,
         help='Use RGB color in input.')
+    parser.add_argument(
+        '--mode',
+        type=str,
+        default='infer',
+        help='Set demo script mode to eval or infer, default: infer')
     args = parser.parse_args()
     return args
+
+# ----------------------------------------
+# Point Cloud Sampling
+# ----------------------------------------
+
+def random_sampling(pc, num_sample, replace=None, return_choices=False):
+    """ Input is NxC, output is num_samplexC
+    """
+    if replace is None: replace = (pc.shape[0]<num_sample)
+    choices = np.random.choice(pc.shape[0], num_sample, replace=replace)
+    if return_choices:
+        return pc[choices], choices
+    else:
+        return pc[choices]
+
+def preprocess_point_cloud(point_cloud, num_points):
+    ''' Prepare the numpy point cloud (N,3) for forward pass '''
+    point_cloud = point_cloud[:, 0:3] # do not use color for now
+    floor_height = np.percentile(point_cloud[:, 2], 0.99)
+    height = point_cloud[:, 2] - floor_height
+    point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)],1)  # (N,4) or (N,7)
+    point_cloud = random_sampling(point_cloud, num_points)
+    pc = np.expand_dims(point_cloud.astype(np.float32), 0)  # (1,20000,4)
+    return pc
+
+def eval_one_epoch():
+    # TODO: complete this eval function
+    pass
 
 def demo():
 
@@ -132,9 +165,11 @@ def demo():
         'dataset_config': DATASET_CONFIG
     }
 
-    # ==== Build train model ====
+    logger.info('==== Start building inference model ====')
     startup = fluid.Program()
     infer_prog = fluid.Program()
+
+    INPUT_FEATURE_DIM = int(args.use_color) * 3 + int(args.use_height) * 1
 
     with fluid.program_guard(infer_prog, startup):
         with fluid.unique_name.guard():
@@ -144,7 +179,7 @@ def demo():
                 num_heading_bin=args.num_heading_bin,
                 num_size_cluster=args.num_size_cluster,
                 num_proposal=args.num_target,
-                input_feature_dim=1,
+                input_feature_dim=INPUT_FEATURE_DIM,
                 vote_factor=args.vote_factor,
                 sampling=args.cluster_sampling,
                 batch_size=args.batch_size,
@@ -154,6 +189,9 @@ def demo():
             infer_model.build()
             infer_outputs = infer_model.get_outputs('test')
             infer_loader = infer_model.get_loader()
+
+    logger.info('==== Model built ====')
+
     infer_prog = infer_prog.clone(True)
     infer_keys, infer_values = parse_outputs(infer_outputs)
 
@@ -161,31 +199,38 @@ def demo():
     exe = fluid.Executor(place)
     exe.run(startup)
 
-    # ==== Load weight param and restore ====
+    logger.info('==== Load weight params from {} ===='.format(args.weight_file))
+
     weight_dict = {}
     with h5py.File(args.weight_file, 'r') as f:
         for key in f.keys():
-            print(key)
+            # print(key)
             weight_dict[key] = np.array(f[key], dtype=np.float32)
         f.close()
 
     for block in infer_prog.blocks:
         for param in block.all_parameters():
-            print(param.name)
-            if 'b_0' not in param.name:
+            if param.name not in weight_dict:
+                logger.info('{} is not in weight dict!'.format(param.name))
                 continue
+
             pd_var = fluid.global_scope().find_var(param.name)
             pd_param = pd_var.get_tensor()
-            print(np.array(pd_param))
+            logger.info("load: {}, shape: {}".format(param.name, param.shape))
+            logger.info("Before setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
+            # logger.info("Setting numpy array value: {}".format(weight_dict[param.name].ravel()[:5]))
+            pd_param.set(weight_dict[param.name], place)
+            logger.info("After setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
 
-            # pd_var = fluid.global_scope().find_var(param.name)
-            # pd_param = pd_var.get_tensor()
-            # print("load: {}, shape: {}".format(param.name, param.shape))
-            # print("Before setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
-            # pd_param.set(np.ones(param.shape), place)
-            # print("After setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
+    logger.info('==== Weight restored ====')
 
+    # ==== TODO: Load indoor scene ply model ====
 
+    # ==== TODO: Preprocessing ====
+
+    # ==== TODO: Inference ====
+
+    # ==== TODO: Dump result ====
 
 
 if __name__ == '__main__':
