@@ -121,7 +121,7 @@ def parse_args():
     parser.add_argument(
         '--use_color',
         type=bool,
-        default=True,
+        default=False,
         help='Use RGB color in input.')
     parser.add_argument(
         '--bn_momentum',
@@ -171,7 +171,7 @@ def parse_args():
     parser.add_argument(
         '--resume',
         type=str,
-        default='checkpoints_seg/30/votenet_det',
+        default=None,  #'checkpoints_seg/30/votenet_det',
         help='path to resume training based on previous checkpoints. '
              'None for not resuming any checkpoints.')
     parser.add_argument(
