@@ -28,7 +28,7 @@ import logging
 from .eval_det import eval_det_multiprocessing, get_iou_obb, eval_det_cls
 from .box_util import get_3d_box
 from .nms import nms_2d_faster, nms_3d_faster, nms_3d_faster_samecls
-from .pc_util import extract_pc_in_box3d
+from .pc_util import extract_pc_in_box3d, gather_numpy, softmax
 
 __all__ = ['APCalculator', 'parse_predictions', 'parse_groundtruths']
 
@@ -47,38 +47,6 @@ def flip_axis_to_depth(pc):
     pc2[..., [0, 1, 2]] = pc2[..., [0, 2, 1]]  # depth X,Y,Z = cam X,Z,-Y
     pc2[..., 2] *= -1
     return pc2
-
-
-def softmax(x):
-    ''' Numpy function for softmax'''
-    shape = x.shape
-    probs = np.exp(x - np.max(x, axis=len(shape) - 1, keepdims=True))
-    probs /= np.sum(probs, axis=len(shape) - 1, keepdims=True)
-    return probs
-
-def gather_numpy(input, dim, index):
-    """
-    Gathers values along an axis specified by dim.
-    For a 3-D tensor the output is specified by:
-        out[i][j][k] = input[index[i][j][k]][j][k]  # if dim == 0
-        out[i][j][k] = input[i][index[i][j][k]][k]  # if dim == 1
-        out[i][j][k] = input[i][j][index[i][j][k]]  # if dim == 2
-
-    :param dim: The axis along which to index
-    :param index: A tensor of indices of elements to gather
-    :return: tensor of gathered values
-    """
-    idx_xsection_shape = index.shape[:dim] + index.shape[dim + 1:]
-    self_xsection_shape = input.shape[:dim] + input.shape[dim + 1:]
-    if idx_xsection_shape != self_xsection_shape:
-        raise ValueError("Except for dimension " + str(dim) +
-                         ", all dimensions of index and self should be the same size")
-    if index.dtype != np.dtype('int_'):
-        raise TypeError("The values of index must be integers")
-    data_swaped = np.swapaxes(input, 0, dim)
-    index_swaped = np.swapaxes(index, 0, dim)
-    gathered = np.choose(index_swaped, data_swaped)
-    return np.swapaxes(gathered, 0, dim)
 
 
 def parse_predictions(end_points, config_dict):
@@ -115,7 +83,7 @@ def parse_predictions(end_points, config_dict):
 
     size_scores = np.array(end_points['size_scores'], dtype=np.float32)
     pred_size_class = np.argmax(size_scores, axis=-1)  # B,num_proposal
-    size_residuals = end_points['size_residuals']
+    size_residuals = np.array(end_points['size_residuals'], dtype=np.float32)
     pred_size_class_expend = np.tile(np.expand_dims(np.expand_dims(pred_size_class, -1), -1), (1, 1, 1, 3))
     pred_size_residual = gather_numpy(size_residuals, 2, pred_size_class_expend)  # B,num_proposal,1,3
 

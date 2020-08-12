@@ -40,6 +40,36 @@ def extract_pc_in_box3d(pc, box3d):
     box3d_roi_inds = in_hull(pc[:,0:3], box3d)
     return pc[box3d_roi_inds,:], box3d_roi_inds
 
+def softmax(x):
+    ''' Numpy function for softmax'''
+    shape = x.shape
+    probs = np.exp(x - np.max(x, axis=len(shape)-1, keepdims=True))
+    probs /= np.sum(probs, axis=len(shape)-1, keepdims=True)
+    return probs
+
+def gather_numpy(input, dim, index):
+    """
+    Gathers values along an axis specified by dim.
+    For a 3-D tensor the output is specified by:
+        out[i][j][k] = input[index[i][j][k]][j][k]  # if dim == 0
+        out[i][j][k] = input[i][index[i][j][k]][k]  # if dim == 1
+        out[i][j][k] = input[i][j][index[i][j][k]]  # if dim == 2
+
+    :param dim: The axis along which to index
+    :param index: A tensor of indices of elements to gather
+    :return: tensor of gathered values
+    """
+    idx_xsection_shape = index.shape[:dim] + index.shape[dim + 1:]
+    self_xsection_shape = input.shape[:dim] + input.shape[dim + 1:]
+    if idx_xsection_shape != self_xsection_shape:
+        raise ValueError("Except for dimension " + str(dim) +
+                         ", all dimensions of index and self should be the same size")
+    if index.dtype != np.dtype('int_'):
+        raise TypeError("The values of index must be integers")
+    data_swaped = np.swapaxes(input, 0, dim)
+    index_swaped = np.swapaxes(index, 0, dim)
+    gathered = np.choose(index_swaped, data_swaped)
+    return np.swapaxes(gathered, 0, dim)
 
 # ----------------------------------------
 # Point Cloud Sampling
@@ -415,7 +445,7 @@ def write_bbox(scene_bbox, out_filename):
 
     mesh_list = trimesh.util.concatenate(scene.dump())
     # save to ply file
-    trimesh.io.export.export_mesh(mesh_list, out_filename, file_type='ply')
+    trimesh.exchange.export.export_mesh(mesh_list, out_filename, file_type='ply')
 
     return
 
@@ -455,7 +485,7 @@ def write_oriented_bbox(scene_bbox, out_filename, sem_class_labels=None):
 
     mesh_list = trimesh.util.concatenate(scene.dump())
     # save to ply file
-    trimesh.io.export.export_mesh(mesh_list, out_filename, file_type='ply')
+    trimesh.exchange.export.export_mesh(mesh_list, out_filename, file_type='ply')
 
     return
 

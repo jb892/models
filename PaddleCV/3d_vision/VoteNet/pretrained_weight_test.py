@@ -32,6 +32,8 @@ from models import *
 from utils import *
 from data.scannet_reader import ScannetDetectionReader
 from models.ap_helper import APCalculator, parse_groundtruths, parse_predictions
+from models.pc_util import read_ply
+from models.dump_helper import dump_results
 
 logging.root.handlers = []
 FORMAT = '%(asctime)s-%(levelname)s: %(message)s'
@@ -185,10 +187,8 @@ def demo():
                 batch_size=args.batch_size,
             )
 
-            infer_model.build_input()
-            infer_model.build()
-            infer_outputs = infer_model.get_outputs('test')
-            infer_loader = infer_model.get_loader()
+            infer_model.build_input('infer')
+            infer_outputs = infer_model.build('infer')
 
     logger.info('==== Model built ====')
 
@@ -198,6 +198,13 @@ def demo():
     place = fluid.CUDAPlace(0) if args.use_gpu else fluid.CPUPlace()
     exe = fluid.Executor(place)
     exe.run(startup)
+
+    build_strategy = fluid.BuildStrategy()
+    build_strategy.memory_optimize = False
+    build_strategy.enable_inplace = False
+    build_strategy.fuse_all_optimizer_ops = False
+
+    infer_compile_prog = fluid.compiler.CompiledProgram(infer_prog)
 
     logger.info('==== Load weight params from {} ===='.format(args.weight_file))
 
@@ -211,26 +218,45 @@ def demo():
     for block in infer_prog.blocks:
         for param in block.all_parameters():
             if param.name not in weight_dict:
-                logger.info('{} is not in weight dict!'.format(param.name))
+                logger.info('Warning: {} is not in weight dict!'.format(param.name))
                 continue
 
             pd_var = fluid.global_scope().find_var(param.name)
             pd_param = pd_var.get_tensor()
             logger.info("load: {}, shape: {}".format(param.name, param.shape))
-            logger.info("Before setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
+            # logger.info("Before setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
             # logger.info("Setting numpy array value: {}".format(weight_dict[param.name].ravel()[:5]))
-            pd_param.set(weight_dict[param.name], place)
-            logger.info("After setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
+            if param.shape == weight_dict[param.name].shape:
+                pd_param.set(weight_dict[param.name], place)
+            else:
+                pd_param.set(np.expand_dims(weight_dict[param.name], -1), place)
+            # logger.info("After setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
 
     logger.info('==== Weight restored ====')
 
-    # ==== TODO: Load indoor scene ply model ====
+    # ==== Load indoor scene ply model ====
+    pcd_path = 'checkpoints_seg/input_pc_scannet.ply'
+    xyz = read_ply(pcd_path)
 
-    # ==== TODO: Preprocessing ====
+    logger.info('Loading point cloud from: ' + pcd_path)
 
-    # ==== TODO: Inference ====
+    # ==== Preprocessing ====
+    xyz_pre = preprocess_point_cloud(xyz, args.num_points)
+    print('preprocessed pc.shape = {}'.format(xyz_pre.shape))
 
-    # ==== TODO: Dump result ====
+    # ==== Inference ====
+    tic = time.time()
+    infer_outs = exe.run(program=infer_compile_prog, feed={'xyz': xyz_pre[:, :, :3], 'feature': np.expand_dims(xyz_pre[:, :, 3], -1)}, fetch_list=infer_values)
+    toc = time.time()
+    logger.info('Inference time: %f' % (toc - tic))
+    end_points = dict(zip(infer_keys, infer_outs))
+    end_points['point_clouds'] = xyz_pre[:, :, :3]
+    pred_map_cls = parse_predictions(end_points, CONFIG_DICT)
+    print('Finished detection. %d object detected.' % (len(pred_map_cls[0])))
+
+    # ==== Dump result ====
+    dump_dir = 'checkpoints_seg/output_model/'
+    dump_results(end_points, dump_dir, DATASET_CONFIG, True)
 
 
 if __name__ == '__main__':

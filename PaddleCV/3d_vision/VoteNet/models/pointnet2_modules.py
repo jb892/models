@@ -267,8 +267,9 @@ def conv1d(input,
                              bias_attr=bias_attr,
                              use_cudnn=use_cudnn,
                              data_format=data_format)
+    out_3dim = layers.squeeze(out_4dim, [-1])
     if bn:
-        out_4dim = layers.batch_norm(out_4dim,
+        out_3dim = layers.batch_norm(out_3dim,
                                      act=act,
                                      momentum=bn_momentum,
                                      param_attr=ParamAttr(name=bn_name + '.weight'),
@@ -277,7 +278,6 @@ def conv1d(input,
                                      moving_variance_name=bn_name + '.var')
 
     # Convert the output tensor from dim 4 back to dim 3
-    out_3dim = layers.squeeze(out_4dim, [-1])
     return out_3dim
 
 def conv_bn(input, out_channels, bn=True, bn_momentum=0.9, act='relu', name=None):
@@ -498,7 +498,7 @@ def PointnetFPModule(unknown,
     new_features = layers.transpose(new_features, perm=[0, 2, 1])  # shape=(B, C2 + C1, N)
     new_features = layers.unsqueeze(new_features, axes=-1)  # shape=(B, C2+C1, N, 1)
     # for i, num_out_channel in enumerate(mlps):
-    new_features = MLP(new_features, out_channels_list=mlps, bn=bn, bn_momentum=bn_momentum, name=name+'_mlp')
+    new_features = MLP(new_features, out_channels_list=mlps, bn=bn, bn_momentum=bn_momentum, name=name+'.mlp')
     new_features = layers.squeeze(new_features, axes=[-1])  # shape=(B, C2+C1, N)
 
     # Convert feature tensor from 'NCW' to 'NWC'
@@ -932,7 +932,7 @@ class VoteNet(object):
         # init proposal module
         self.pnet = ProposalModule(num_class, num_heading_bin, num_size_cluster, num_proposal, sampling, bn_momentum=bn_momentum, name='pnet')
 
-    def build_input(self):
+    def build_input(self, mode='train'):
         self.xyz = fluid.data(name='xyz',
                               shape=[self.batch_size, self.num_points, 3],
                               dtype='float32',
@@ -942,9 +942,9 @@ class VoteNet(object):
                                   dtype='float32',
                                   lod_level=0)
         self.center_label = fluid.data(name='center_label',
-                                shape=[self.batch_size, MAX_NUM_OBJ, 3],
-                                dtype='float32',
-                                lod_level=0)
+                                       shape=[self.batch_size, MAX_NUM_OBJ, 3],
+                                       dtype='float32',
+                                       lod_level=0)
         self.heading_class_label = fluid.data(name='heading_class_label',
                                               shape=[self.batch_size, MAX_NUM_OBJ],
                                               dtype='int64',
@@ -958,37 +958,46 @@ class VoteNet(object):
                                                  dtype='int64',
                                                  lod_level=0)
         self.size_residual_label = fluid.data(name='size_residual_label',
-                                           shape=[self.batch_size, MAX_NUM_OBJ, 3],
-                                           dtype='float32',
-                                           lod_level=0)
-        self.sem_cls_label = fluid.data(name='sem_cls_label',
-                                              shape=[self.batch_size, MAX_NUM_OBJ],
-                                              dtype='int64',
-                                              lod_level=0)
-        self.box_label_mask = fluid.data(name='box_label_mask',
-                                              shape=[self.batch_size, MAX_NUM_OBJ],
+                                              shape=[self.batch_size, MAX_NUM_OBJ, 3],
                                               dtype='float32',
                                               lod_level=0)
-        self.vote_label = fluid.data(name='vote_label',
-                                        shape=[self.batch_size, self.num_points, 9],
-                                        dtype='float32',
-                                        lod_level=0)
-        self.vote_label_mask = fluid.data(name='vote_label_mask',
-                                        shape=[self.batch_size, self.num_points],
+        self.sem_cls_label = fluid.data(name='sem_cls_label',
+                                        shape=[self.batch_size, MAX_NUM_OBJ],
                                         dtype='int64',
                                         lod_level=0)
-        self.loader = fluid.io.DataLoader.from_generator(
-            feed_list=[self.xyz, self.feature, self.center_label, self.heading_class_label, self.heading_residual_label,
-                       self.size_class_label, self.size_residual_label, self.sem_cls_label, self.box_label_mask, self.vote_label,
-                       self.vote_label_mask],
-            capacity=64,
-            use_double_buffer=True,
-            iterable=False)
-        self.feed_vars = [self.xyz, self.feature, self.center_label, self.heading_class_label, self.heading_residual_label,
-                          self.size_class_label, self.size_residual_label, self.sem_cls_label, self.box_label_mask, self.vote_label,
-                          self.vote_label_mask]
+        self.box_label_mask = fluid.data(name='box_label_mask',
+                                         shape=[self.batch_size, MAX_NUM_OBJ],
+                                         dtype='float32',
+                                         lod_level=0)
+        self.vote_label = fluid.data(name='vote_label',
+                                     shape=[self.batch_size, self.num_points, 9],
+                                     dtype='float32',
+                                     lod_level=0)
+        self.vote_label_mask = fluid.data(name='vote_label_mask',
+                                          shape=[self.batch_size, self.num_points],
+                                          dtype='int64',
+                                          lod_level=0)
 
-    def build(self):
+        if mode == 'train':
+            feed_list = [self.xyz, self.feature, self.center_label, self.heading_class_label, self.heading_residual_label,
+                       self.size_class_label, self.size_residual_label, self.sem_cls_label, self.box_label_mask, self.vote_label,
+                       self.vote_label_mask]
+
+            self.loader = fluid.io.DataLoader.from_generator(
+                feed_list=feed_list,
+                capacity=64,
+                use_double_buffer=True,
+                iterable=False)
+            self.feed_vars = feed_list
+        elif mode == 'infer':
+            feed_list = [self.xyz, self.feature]
+        else:
+            logger.error('Input mode can only either be train or infer.')
+            exit(-1)
+
+        return feed_list
+
+    def build(self, mode='train'):
         end_points = {}
 
         # Backbone point feature learning
@@ -1015,6 +1024,9 @@ class VoteNet(object):
 
         # Vote aggregation and detection
         end_points = self.pnet.build(vote_xyz, vote_features, end_points, batch_size=self.batch_size)#, self.mean_size_arr)
+
+        if mode == 'infer':
+            return end_points
 
         config = {
             'num_heading_bin': self.num_heading_bin,
@@ -1098,21 +1110,21 @@ class VoteNet(object):
 def prepare_input_data(num_points, num_class, input_feature_dim):
 
     xyz = fluid.data(name='xyz',
-                    shape=[None, num_points, 3],
-                    dtype='float32',
-                    lod_level=0)
+                     shape=[None, num_points, 3],
+                     dtype='float32',
+                     lod_level=0)
     feature = fluid.data(name='feature',
-                        shape=[None, num_points, input_feature_dim],
-                        dtype='float32',
-                        lod_level=0)
+                         shape=[None, num_points, input_feature_dim],
+                         dtype='float32',
+                         lod_level=0)
     label = fluid.data(name='label',
-                        shape=[None, num_points, 1],
-                        dtype='int64',
-                        lod_level=0)
+                       shape=[None, num_points, 1],
+                       dtype='int64',
+                       lod_level=0)
     mean_size_arr = fluid.data(name='mean_size_arr',
-                                shape=[num_class, 3],
-                                dtype='float32',
-                                lod_level=0)
+                               shape=[num_class, 3],
+                               dtype='float32',
+                               lod_level=0)
     return xyz, feature, label, mean_size_arr
 
 def test_backbone():
@@ -1207,11 +1219,11 @@ def test_VoteNet():
     xyz_val = np.load('test_pcd.npz.npy').astype(np.float32)
 
     net = testVoteNet(num_class=num_class,
-                  num_points=num_points,
-                  num_heading_bin=num_heading_bin,
-                  num_size_cluster=num_size_cluster,
-                  input_feature_dim=input_feature_dim,
-                  batch_size=batch_size)
+                      num_points=num_points,
+                      num_heading_bin=num_heading_bin,
+                      num_size_cluster=num_size_cluster,
+                      input_feature_dim=input_feature_dim,
+                      batch_size=batch_size)
 
     end_points = net.build(xyz, mean_size_arr=mean_size_arr_val)
 

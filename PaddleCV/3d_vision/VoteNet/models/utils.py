@@ -19,13 +19,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
-import sys
-import six
 import logging
 import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 from paddle.fluid.param_attr import ParamAttr
+from paddle.fluid.initializer import Constant, Normal
 import numpy as np
 
 __all__ = ["conv1d"]
@@ -36,16 +34,15 @@ def conv1d(input,
            num_filters,
            filter_size,
            bn=True,
-           bn_momentum=0.99,
+           bn_momentum=0.9,
            stride=1,
            padding=0,
            dilation=1,
            groups=None,
-           # param_attr=None,
-           # bias_attr=None,
            use_cudnn=True,
            act='relu',
-           name=None,
+           conv_name=None,
+           bn_name=None,
            data_format="NCHW"):
     """
 
@@ -67,6 +64,11 @@ def conv1d(input,
     :return:
     """
 
+    def _get_kaiming_init():
+        fan_in = input.shape[1]
+        std = (1.0 / fan_in / 3.0) ** 0.5
+        return Normal(0., std, 0.)
+
     # Convert the input tensor from dim 3 to dim 4
     input_4dim = layers.unsqueeze(input, axes=-1)
 
@@ -82,39 +84,34 @@ def conv1d(input,
         assert(isinstance(filter_size, int))
         filter_size = [filter_size, 1]
 
-    param_attr = ParamAttr(name='{}_conv1d_weight'.format(name), )
-    bias_attr = ParamAttr(name='{}_conv1d_bias'.format(name)) \
-        if not bn else False
+    param_attr = ParamAttr(name='{}.weight'.format(conv_name),
+                           initializer=_get_kaiming_init())
+    bias_attr = ParamAttr(name='{}.bias'.format(conv_name),
+                          initializer=Constant(0.0))
 
     out_4dim = layers.conv2d(input=input_4dim,
-                               num_filters=num_filters,
-                               filter_size=filter_size,
-                               stride=1,
-                               padding=0,
-                               dilation=1,
-                               groups=groups,
-                               param_attr=param_attr,
-                               bias_attr=bias_attr,
-                               use_cudnn=use_cudnn,
-                               name=name,
-                               data_format=data_format)
-                               # act=act if not bn else None)
+                             num_filters=num_filters,
+                             filter_size=filter_size,
+                             stride=stride,
+                             padding=padding,
+                             dilation=dilation,
+                             groups=groups,
+                             param_attr=param_attr,
+                             bias_attr=bias_attr,
+                             use_cudnn=use_cudnn,
+                             data_format=data_format)
     if bn:
-        bn_name = name + '_bn'
         out_4dim = layers.batch_norm(out_4dim,
-                                       act=act,
-                                       momentum=bn_momentum,
-                                       param_attr=ParamAttr(name=bn_name + '_scale'),
-                                       bias_attr=ParamAttr(name=bn_name + '_offset'),
-                                       moving_mean_name=bn_name + '_mean',
-                                       moving_variance_name=bn_name + '_var')
-    if act == "relu":
-        out_4dim = layers.relu(out_4dim)
+                                     act=act,
+                                     momentum=bn_momentum,
+                                     param_attr=ParamAttr(name=bn_name + '.weight'),
+                                     bias_attr=ParamAttr(name=bn_name + '.bias'),
+                                     moving_mean_name=bn_name + '.mean',
+                                     moving_variance_name=bn_name + '.var')
 
     # Convert the output tensor from dim 4 back to dim 3
-    out_3dim = layers.squeeze(out_4dim, -1)
+    out_3dim = layers.squeeze(out_4dim, [-1])
     return out_3dim
-
 
 def test():
     # Test goes here
