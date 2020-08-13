@@ -70,7 +70,7 @@ def parse_args():
     parser.add_argument(
         '--cluster_sampling',
         type=str,
-        default='vote_fps',
+        default='seed_fps',
         help='Sampling strategy for vote clusters: vote_fps, seed_fps, random [default: vote_fps]')
     parser.add_argument(
         '--ap_iou_thresh',
@@ -162,7 +162,7 @@ def demo():
         'use_old_type_nms': False,
         'cls_nms': True,
         'per_class_proposal': True,
-        'conf_thresh': 0.05,
+        'conf_thresh': 0.5,
         'batch_size': args.batch_size,
         'dataset_config': DATASET_CONFIG
     }
@@ -185,6 +185,7 @@ def demo():
                 vote_factor=args.vote_factor,
                 sampling=args.cluster_sampling,
                 batch_size=args.batch_size,
+                bn_momentum=0.9
             )
 
             infer_model.build_input('infer')
@@ -258,24 +259,23 @@ def demo():
     end_points['point_clouds'] = xyz_pre[:, :, :3]
 
     # Print some shits:
-    logger.info('grouped_features: {}'.format(end_points['grouped_features']))
-    logger.info('new_features: {}'.format(end_points['new_features']))
+    logger.info('objectness_scores: {}'.format(end_points['objectness_scores']))
+    logger.info('center: {}'.format(end_points['center']))
+    logger.info('heading_scores: {}'.format(end_points['heading_scores']))
+    logger.info('heading_residuals_normalized: {}'.format(end_points['heading_residuals_normalized']))
+    logger.info('heading_residuals: {}'.format(end_points['heading_residuals']))
+    logger.info('size_scores: {}'.format(end_points['size_scores']))
+    logger.info('size_residuals_normalized: {}'.format(end_points['size_residuals_normalized']))
+    logger.info('size_residuals: {}'.format(end_points['size_residuals']))
+    logger.info('sem_cls_scores: {}'.format(end_points['sem_cls_scores']))
 
-    logger.info('sa1_xyz: {}'.format(end_points['sa1_xyz']))
-    logger.info('sa1_fea: {}'.format(end_points['sa1_features']))
-    logger.info('sa1_ind: {}'.format(end_points['sa1_inds']))
 
-    logger.info('fp2_xyz: {}'.format(end_points['fp2_xyz']))
-    logger.info('fp2_fea: {}'.format(end_points['fp2_features']))
-    logger.info('fp2_ind: {}'.format(end_points['fp2_inds']))
+    pred_map_cls = parse_predictions(end_points, CONFIG_DICT)
+    print('Finished detection. %d object detected.' % (len(pred_map_cls[0])))
 
-
-    # pred_map_cls = parse_predictions(end_points, CONFIG_DICT)
-    # print('Finished detection. %d object detected.' % (len(pred_map_cls[0])))
-    #
-    # # ==== Dump result ====
-    # dump_dir = 'checkpoints_seg/output_model/'
-    # dump_results(end_points, dump_dir, DATASET_CONFIG, True)
+    # ==== Dump result ====
+    dump_dir = 'checkpoints_seg/output_model/'
+    dump_results(end_points, dump_dir, DATASET_CONFIG, True)
 
 
 if __name__ == '__main__':

@@ -355,15 +355,10 @@ def PointnetSAModuleVotes(xyz,
 
     if inds is None:
         inds = farthest_point_sampling(xyz, npoint)  # [B, M], (M=nsample)
-        if end_points is not None:
-            end_points['inds'] = inds
     else:
         assert(inds.shape[1] == npoint)
 
     new_xyz = gather_point(xyz, inds) if npoint is not None else None  # [B, M, 3], (M=nsample)
-
-    if end_points is not None:
-        end_points['new_xyz'] = new_xyz
 
     # logger.info('PointnetSAModuleVotes: new_xyz.shape = {}'.format(new_xyz.shape))
 
@@ -374,29 +369,7 @@ def PointnetSAModuleVotes(xyz,
         # (B, C, npoint, nsample, C),(B, 3, npoint, nsample, 3),(B,npoint)
         grouped_features, grouped_xyz, unique_cnt = grouper.build(xyz, new_xyz, features)
 
-    # print('npoint = ', npoint)
-    # print('nsample = ', nsample)
-    # print('grouped_features.shape = {}'.format(grouped_features.shape))
-    # print('grouped_xyz.shape = {}'.format(grouped_xyz.shape))
-
-    if end_points is not None:
-        end_points['grouped_features'] = grouped_features
-
-    # MLP
-    # Convert memory layout from 'NHWC' to 'NCHW'
-    # grouped_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2])  # out_shape=[B, C, npoint, nsample]
-
-    # logger.info('grouped_features.shape: {}'.format(grouped_features.shape))
-
-    # for i, num_out_channel in enumerate(mlp_spec):
     new_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_momentum, name=name+'.mlp_module')
-
-    if end_points is not None:
-        end_points['new_features'] = new_features
-
-    # new_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2]) # (B, mlp_spec[-1], npoint, nsample)
-
-    # logger.info('new_features.shape: {}'.format(new_features.shape))
 
     # Pooling
     if pooling == 'max':  # NCHW format
@@ -739,11 +712,13 @@ class ProposalModule(object):
             exit()
         end_points['aggregated_vote_xyz'] = xyz # (batch_size, num_proposal, 3)
         end_points['aggregated_vote_inds'] = sample_inds # (batch_size, num_proposal,) # should be 0,1,2,...,num_proposal
+        end_points['aggregated_vote_features'] = features
+
 
         # --------- PROPOSAL GENERATION ---------
-        net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu',
+        net = conv1d(input=features, num_filters=128, filter_size=1, bn=True,
                      conv_name=self.name+'.conv1', bn_name=self.name+'.bn1', bn_momentum=self.bn_momentum)
-        net = conv1d(input=net, num_filters=128, filter_size=1, bn=True, act='relu',
+        net = conv1d(input=net, num_filters=128, filter_size=1, bn=True,
                      conv_name=self.name+'.conv2', bn_name=self.name+'.bn2', bn_momentum=self.bn_momentum)
         net = conv1d(input=net,
                      num_filters=2+3+self.num_heading_bin*2+self.num_size_cluster*4+self.num_class,
@@ -752,6 +727,7 @@ class ProposalModule(object):
                      act=None,
                      conv_name=self.name+'.conv3',
                      bn_momentum=self.bn_momentum) #(batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
+        end_points['pnet_conv1d'] = net
 
         end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
                                    mean_size_arr, batch_size)

@@ -201,6 +201,10 @@ def parse_predictions(end_points, config_dict):
                                        pred_mask[i, j] == 1 and obj_prob[i, j] > config_dict['conf_thresh']])
     end_points['batch_pred_map_cls'] = batch_pred_map_cls
 
+    print('batch_pred_map_cls[0]: {}'.format(batch_pred_map_cls[0][0]))
+    print('batch_pred_map_cls[1]: {}'.format(batch_pred_map_cls[0][1]))
+    print('batch_pred_map_cls.len: {}'.format(len(batch_pred_map_cls[0])))
+
     return batch_pred_map_cls
 
 
