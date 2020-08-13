@@ -229,20 +229,25 @@ def demo():
             if param.shape == weight_dict[param.name].shape:
                 pd_param.set(weight_dict[param.name], place)
             else:
+                logger.info("para.shape: {}, weight.shape: {}".format(param.shape, weight_dict[param.name].shape))
                 pd_param.set(np.expand_dims(weight_dict[param.name], -1), place)
-            # logger.info("After setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
+
+            logger.info("After setting the numpy array value: {}".format(np.array(pd_param).ravel()[:5]))
 
     logger.info('==== Weight restored ====')
 
     # ==== Load indoor scene ply model ====
     pcd_path = 'checkpoints_seg/input_pc_scannet.ply'
-    xyz = read_ply(pcd_path)
+    # xyz = read_ply(pcd_path)
 
     logger.info('Loading point cloud from: ' + pcd_path)
 
     # ==== Preprocessing ====
-    xyz_pre = preprocess_point_cloud(xyz, args.num_points)
-    print('preprocessed pc.shape = {}'.format(xyz_pre.shape))
+    # xyz_pre = preprocess_point_cloud(xyz, args.num_points)
+    xyz_pre = np.load('my_input.npy')
+    logger.info('preprocessed pc.shape = {}'.format(xyz_pre.shape))
+
+    logger.info('xyz_pre: {}'.format(xyz_pre.ravel()[:10]))
 
     # ==== Inference ====
     tic = time.time()
@@ -251,12 +256,26 @@ def demo():
     logger.info('Inference time: %f' % (toc - tic))
     end_points = dict(zip(infer_keys, infer_outs))
     end_points['point_clouds'] = xyz_pre[:, :, :3]
-    pred_map_cls = parse_predictions(end_points, CONFIG_DICT)
-    print('Finished detection. %d object detected.' % (len(pred_map_cls[0])))
 
-    # ==== Dump result ====
-    dump_dir = 'checkpoints_seg/output_model/'
-    dump_results(end_points, dump_dir, DATASET_CONFIG, True)
+    # Print some shits:
+    logger.info('grouped_features: {}'.format(end_points['grouped_features']))
+    logger.info('new_features: {}'.format(end_points['new_features']))
+
+    logger.info('sa1_xyz: {}'.format(end_points['sa1_xyz']))
+    logger.info('sa1_fea: {}'.format(end_points['sa1_features']))
+    logger.info('sa1_ind: {}'.format(end_points['sa1_inds']))
+
+    logger.info('fp2_xyz: {}'.format(end_points['fp2_xyz']))
+    logger.info('fp2_fea: {}'.format(end_points['fp2_features']))
+    logger.info('fp2_ind: {}'.format(end_points['fp2_inds']))
+
+
+    # pred_map_cls = parse_predictions(end_points, CONFIG_DICT)
+    # print('Finished detection. %d object detected.' % (len(pred_map_cls[0])))
+    #
+    # # ==== Dump result ====
+    # dump_dir = 'checkpoints_seg/output_model/'
+    # dump_results(end_points, dump_dir, DATASET_CONFIG, True)
 
 
 if __name__ == '__main__':

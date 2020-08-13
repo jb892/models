@@ -274,7 +274,7 @@ def group_points(input, idx, name=None):
 
     Args:
         input (Variable): The input tensor of three_interp operator. This
-                          is a 3-D tensor with shape of [B, N, C].
+                          is a 3-D tensor with shape of [B, C, N].
         idx (Variable): The index tensor of three_interp operator. This
                           is a 3-D tensor with shape of [B, M, S].
         name(str|None): A name for this layer(optional). If set None, the layer
@@ -282,14 +282,14 @@ def group_points(input, idx, name=None):
 
     Returns:
         output (Variable): The output tensor of three_interp operator.
-                             This is a 4-D tensor with shape of [B, M, S, C].
+                             This is a 4-D tensor with shape of [B, C, M, S].
 
     Examples:
 
         .. code-block:: python
 
             import paddle.fluid as fluid
-            x = fluid.data(name='x', shape=[None, 16, 3], dtype='float32')
+            x = fluid.data(name='x', shape=[None, 3, 16], dtype='float32')
             index = fluid.data(name='index', shape=[None, 32, 3], dtype='int32')
             out  = fluid.layers.group_points(x, index)
     """

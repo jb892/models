@@ -78,22 +78,14 @@ class QueryAndGroup(object):
             Args:
                 xyz (Variable): xyz coordiantes features with shape [B, N, 3]
                 new_xyz (Variable): centriods features with shape [B, npoint, 3]
-                features (Variable): features with shape [B, N, C]
+                features (Variable): features with shape [B, C, N]
             Returns:
                 out (Variable): features with shape [B, npoint, nsample, C + 3]
             """
 
         # idx:shape=[B, npoint, nsample]
-        # logger.info('xyz.shape: {}'.format(xyz.shape))
-        # logger.info('new_xyz.shape: {}'.format(new_xyz.shape))
-        # logger.info('features.shape: {}'.format(features.shape))
-        # logger.info('radius: {}'.format(self.radius))
-        # logger.info('n_sample: {}'.format(self.nsample))
-
         idx = query_ball(input=xyz, new_points=new_xyz, radius=self.radius, n_sample=self.nsample)
         idx.stop_gradient = True
-
-        # logger.info('idx.shape: {}'.format(idx.shape))
 
         # Added sample uniform option
         if self.sample_uniformly:
@@ -108,46 +100,23 @@ class QueryAndGroup(object):
                     idx[i_batch, i_region, :] = all_ind
 
         xyz_t = layers.transpose(xyz, perm=[0, 2, 1])
+
         grouped_xyz = group_points(xyz_t, idx)  # output_shape=[B, 3, npoint, nsample]
 
-        # logger.info('grouped_xyz.shape: {}'.format(grouped_xyz.shape))
-
-        new_xyz_ex = layers.expand(layers.unsqueeze(layers.transpose(new_xyz, perm=[0, 2, 1]), -1), [1, 1, 1, grouped_xyz.shape[-1]])
-
-        # logger.info('new_xyz_ex.shape: {}'.format(new_xyz_ex.shape))
+        new_xyz_ex = fluid.layers.expand(layers.unsqueeze(layers.transpose(new_xyz, perm=[0, 2, 1]), -1), [1, 1, 1, grouped_xyz.shape[3]])
 
         grouped_xyz -= new_xyz_ex  # shape=[B, 3, npoint, nsample]
-
-        # logger.info('grouped_xyz.shape: {}'.format(grouped_xyz.shape))
 
         if self.normalize_xyz:
             grouped_xyz /= self.radius
 
         if features is not None:
-            features_t = layers.transpose(features, perm=[0, 2, 1])
+            grouped_features = group_points(features, idx)
 
-            # logger.info('features_t.shape: {}'.format(features_t.shape))
-
-            grouped_features = group_points(features_t, idx)
-
-            # logger.info('grouped_features.shape: {}'.format(grouped_features.shape))
-
-            # new_features: shape = [B, npoint, nsample, 3 + C]
+            # new_features: shape = [B, 3 + C, npoint, nsample]
             new_features = layers.concat([grouped_xyz, grouped_features], axis=1) if self.use_xyz else grouped_features
-
-            # logger.info('new_features.shape: {}'.format(new_features.shape))
-
-            new_features = layers.transpose(new_features, perm=[0, 2, 3, 1])
-
-            # logger.info('new_features.shape: {}'.format(new_features.shape))
         else:
-            new_features = layers.transpose(grouped_xyz, perm=[0, 2, 3, 1])
-
-        grouped_xyz = layers.transpose(grouped_xyz, perm=[0, 2, 3, 1])
-
-        # if self.end_points is not None:
-        #     self.end_points['sa1_new_features'] = new_features
-        #     self.end_points['sa1_group_xyz_norm'] = grouped_xyz
+            new_features = grouped_xyz
 
         ret = [new_features]
         if self.ret_grouped_xyz:
@@ -174,7 +143,7 @@ class GroupAll(object):
         new_xyz : torch.Tensor
             Ignored
         features : torch.Tensor
-            Descriptors of the features (B, N, C)
+            Descriptors of the features (B, C, N)
 
         Returns
         -------
@@ -183,6 +152,7 @@ class GroupAll(object):
         """
         grouped_xyz = layers.unsqueeze(xyz, axes=1)
         if features is not None:
+            features = layers.transpose(features, perm=[0, 2, 1])
             grouped_features = layers.unsqueeze(features, axes=1)
             if self.use_xyz:
                 new_features = layers.concat(input=[grouped_xyz, grouped_features], axis=-1)
@@ -346,11 +316,10 @@ def PointnetSAModuleVotes(xyz,
 
     Args:
         xyz (Variable): xyz coordiantes features with shape [B, N, 3]
-        features (Variable): additional features for each point [B, N, C]
+        feature (Variable): features with shape [B, C, N]
         radius (float32): radius of ball
         nsample (int32): maximum number of gather features
         mlp ([int32]): out_channels_list
-        feature (Variable): features with shape [B, C, N]
         bn (bool): whether perform batch norm after conv2d
         use_xyz (bool): whether use xyz coordiantes features
 	    bn_momentum (float): momentum of batch norm
@@ -385,31 +354,45 @@ def PointnetSAModuleVotes(xyz,
     mlp_spec = mlps
 
     if inds is None:
-        inds = farthest_point_sampling(xyz, npoint) # [B, M], (M=nsample)
+        inds = farthest_point_sampling(xyz, npoint)  # [B, M], (M=nsample)
+        if end_points is not None:
+            end_points['inds'] = inds
     else:
         assert(inds.shape[1] == npoint)
 
-    new_xyz = gather_point(xyz, inds) if npoint is not None else None # [B, M, 3], (M=nsample)
+    new_xyz = gather_point(xyz, inds) if npoint is not None else None  # [B, M, 3], (M=nsample)
+
+    if end_points is not None:
+        end_points['new_xyz'] = new_xyz
 
     # logger.info('PointnetSAModuleVotes: new_xyz.shape = {}'.format(new_xyz.shape))
 
     if not ret_unique_cnt:
-        # (B, npoint, nsample, C),(B, npoint, nsample, 3)
+        # (B, C, npoint, nsample),(B, 3, npoint, nsample, 3)
         grouped_features, grouped_xyz = grouper.build(xyz, new_xyz, features)
     else:
-        # (B, npoint, nsample, C),(B, npoint, nsample, 3),(B,npoint)
+        # (B, C, npoint, nsample, C),(B, 3, npoint, nsample, 3),(B,npoint)
         grouped_features, grouped_xyz, unique_cnt = grouper.build(xyz, new_xyz, features)
+
+    # print('npoint = ', npoint)
+    # print('nsample = ', nsample)
+    # print('grouped_features.shape = {}'.format(grouped_features.shape))
+    # print('grouped_xyz.shape = {}'.format(grouped_xyz.shape))
+
+    if end_points is not None:
+        end_points['grouped_features'] = grouped_features
 
     # MLP
     # Convert memory layout from 'NHWC' to 'NCHW'
-    grouped_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2])  # out_shape=[B, C, npoint, nsample]
+    # grouped_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2])  # out_shape=[B, C, npoint, nsample]
 
     # logger.info('grouped_features.shape: {}'.format(grouped_features.shape))
 
     # for i, num_out_channel in enumerate(mlp_spec):
-    grouped_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_momentum, name=name+'.mlp_module')
+    new_features = MLP(grouped_features, out_channels_list=mlp_spec, bn=bn, bn_momentum=bn_momentum, name=name+'.mlp_module')
 
-    new_features = grouped_features
+    if end_points is not None:
+        end_points['new_features'] = new_features
 
     # new_features = layers.transpose(grouped_features, perm=[0, 3, 1, 2]) # (B, mlp_spec[-1], npoint, nsample)
 
@@ -430,16 +413,7 @@ def PointnetSAModuleVotes(xyz,
         # new_features: shape = (B, mlp[-1], npoint, 1)
         new_features = layers.reduce_sum(new_features * layers.unsqueeze(rbf, axes=1), dim=-1, keep_dim=True) / float(nsample)
 
-    # logger.info('new_features.shape: {}'.format(new_features.shape))
-
     new_features = layers.squeeze(new_features, axes=[-1])  # shape=[B, mlp_spec[-1], npoint]
-
-    # logger.info('new_features.shape: {}'.format(new_features.shape))
-
-    # Convert new_feature tensor from 'NCW' to 'NWC' format
-    new_features = layers.transpose(new_features, perm=[0, 2, 1])
-
-    # logger.info('new_features.shape: {}'.format(new_features.shape))
 
     if not ret_unique_cnt:
         # new_xyz:shape=[B, nsample, 3], new_features:shape=[B, npoint, mlps[-1]], inds:shape=[B, nsample]
@@ -461,8 +435,8 @@ def PointnetFPModule(unknown,
     """
     :param unknown: (B, n, 3) tensor of the xyz positions of the unknown features
     :param known: (B, m, 3) tensor of the xyz positions of the known features
-    :param unknown_feats: (B, n, C1) tensor of the features to be propigated to
-    :param known_feats: (B, m, C2) tensor of features to be propigated
+    :param unknown_feats: (B, C1, n) tensor of the features to be propigated to
+    :param known_feats: (B, C2, m) tensor of features to be propigated
     :param mlps: Pointnet module parameters
     :param bn: Use batchnorm
     :param bn_m: batchnorm momentum figure
@@ -484,13 +458,16 @@ def PointnetFPModule(unknown,
         weight.stop_gradient = True
 
         # known_feats.shape = [B, M, C], weight.shape = [B, N, 3], idx.shape = [B, N, 3]
-        interpolated_feats = three_interp(input=known_feats, weight=weight, idx=idx)  # out_shape=[B, N, C]
+        known_feats_t = layers.transpose(known_feats, perm=[0, 2, 1])
+        interpolated_feats = three_interp(input=known_feats_t, weight=weight, idx=idx)  # out_shape=[B, N, C]
     else:
+        known_feats_t = layers.transpose(known_feats, perm=[0, 2, 1])
         interpolated_feats = layers.expand(known_feats,
-                                           expand_times=[batch_size, unknown.shape[1], known_feats.shape[2]]) # [B, N, C]
+                                           expand_times=[batch_size, unknown.shape[1], known_feats_t.shape[2]]) # [B, N, C]
 
     if unknown_feats is not None:
-        new_features = layers.concat([interpolated_feats, unknown_feats], axis=-1)  # shape=(B, N, C2 + C1)
+        unknown_feats_t = layers.transpose(unknown_feats, perm=[0, 2, 1])
+        new_features = layers.concat([interpolated_feats, unknown_feats_t], axis=-1)  # shape=(B, N, C2 + C1)
     else:
         new_features = interpolated_feats
 
@@ -502,7 +479,7 @@ def PointnetFPModule(unknown,
     new_features = layers.squeeze(new_features, axes=[-1])  # shape=(B, C2+C1, N)
 
     # Convert feature tensor from 'NCW' to 'NWC'
-    new_features = layers.transpose(new_features, perm=[0, 2, 1])  # shape=[B, N, C]
+    # new_features = layers.transpose(new_features, perm=[0, 2, 1])  # shape=[B, N, C]
     return new_features
 
 # Checked!
@@ -526,6 +503,8 @@ class Pointnet2Backbone(object):
                 XXX_features: float32 Tensor of shape (B,K,D)
                 XXX-inds: int64 Tensor of shape (B,K) values in [0,N-1]
         """
+        if features is not None:
+            features = layers.transpose(features, perm=[0, 2, 1])
 
         # --------- 4 SET ABSTRACTION LAYERS ---------
         l1_xyz, l1_feature, l1_inds = PointnetSAModuleVotes(
@@ -681,10 +660,6 @@ class VotingModule(object):
         vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
         # vote_features.shape = [B, out_dim, num_vote]
 
-        # print('vote_features.shape = ', vote_features.shape)
-        # if end_points is not None:
-        #     end_points['voting_features'] = vote_features
-
         return vote_xyz, vote_features
 
 # Checked!
@@ -709,12 +684,11 @@ class ProposalModule(object):
         Returns:
             scores: (B,num_proposal,2+3+NH*2+NS*4)
         """
-        features_t = layers.transpose(features, perm=[0, 2, 1])
         if self.sampling == 'vote_fps':
             # Farthest point sampling (FPS) on votes
             xyz, features, fps_inds = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features_t,
+                features=features,
                 npoint=self.num_proposal,
                 radius=0.3,
                 nsample=16,
@@ -731,7 +705,7 @@ class ProposalModule(object):
             sample_inds = farthest_point_sampling(end_points['seed_xyz'], self.num_proposal)
             xyz, features, _ = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features_t,
+                features=features,
                 inds=sample_inds,
                 npoint=self.num_proposal,
                 radius=0.3,
@@ -749,7 +723,7 @@ class ProposalModule(object):
             sample_inds = fluid.layers.randint(0, num_seed, shape=(batch_size, self.num_proposal), dtype='int32')
             xyz, features, _ = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features_t,
+                features=features,
                 inds=sample_inds,
                 npoint=self.num_proposal,
                 radius=0.3,
@@ -766,8 +740,6 @@ class ProposalModule(object):
         end_points['aggregated_vote_xyz'] = xyz # (batch_size, num_proposal, 3)
         end_points['aggregated_vote_inds'] = sample_inds # (batch_size, num_proposal,) # should be 0,1,2,...,num_proposal
 
-        # Convert tensor from 'NWC' to 'NCW' format
-        features = layers.transpose(features, perm=[0, 2, 1])
         # --------- PROPOSAL GENERATION ---------
         net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu',
                      conv_name=self.name+'.conv1', bn_name=self.name+'.bn1', bn_momentum=self.bn_momentum)
@@ -780,9 +752,6 @@ class ProposalModule(object):
                      act=None,
                      conv_name=self.name+'.conv3',
                      bn_momentum=self.bn_momentum) #(batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
-
-        # Convert tensor from 'NCW' to 'NWC' format
-        net = layers.transpose(net, perm=[0, 2, 1])
 
         end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
                                    mean_size_arr, batch_size)
@@ -800,8 +769,9 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
     :param batch_size:
     :return:
     """
+    net = layers.transpose(net, perm=[0, 2, 1])
 
-    # num_proposal should be 1024
+    # num_proposal should be 256
     num_proposal = net.shape[1]
 
     objectness_scores = net[:, :, 0:2]
@@ -810,8 +780,6 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
     base_xyz = end_points['aggregated_vote_xyz']  # (batch_size, num_proposal, 3)
     center = base_xyz + net[:, :, 2:5]  # (batch_size, num_proposal, 3)
     end_points['center'] = center
-
-    # logger.info('center.shape = ', center.shape)
 
     heading_scores = net[:, :, 5:5 + num_heading_bin]
     heading_residuals_normalized = net[:, :, 5 + num_heading_bin:5 + num_heading_bin * 2]
@@ -1010,14 +978,9 @@ class VoteNet(object):
         end_points['seed_features'] = features
         end_points['seed_inds'] = end_points['fp2_inds']
 
-        # Convert features tensor from 'NWC' to 'NCW' format
-        features = layers.transpose(features, perm=[0, 2, 1])
         vote_xyz, vote_features = self.vgen.build(xyz, features) # vote_features.shape = [B, out_dim, num_vote]
         features_norm = layers.sqrt(layers.reduce_sum(layers.pow(vote_features, factor=2.0), dim=1, keep_dim=False))
         vote_features = vote_features / layers.unsqueeze(features_norm, 1) # features_norm.shape = [B, 1, num_vote]
-
-        # Convert features tensor from 'NCW' to 'NWC'
-        # vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
 
         end_points['vote_xyz'] = vote_xyz
         end_points['vote_features'] = vote_features
