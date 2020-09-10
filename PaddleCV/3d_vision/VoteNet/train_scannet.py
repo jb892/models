@@ -442,6 +442,123 @@ def train():
     #     print("kpis\ttrain_seg_%s_duration_card%s\t%s" % (args.model, card_num, _time))
     #     print("kpis\ttrain_seg_%s_loss_card%s\t%f" % (args.model, card_num, _loss))
 
+def test_train():
+    # Params list
+    USE_HEIGHT = True
+    AUGMENT = False
+    MAX_NUM_OBJ = 64
+
+    # 1. Prepare the same input data
+    scene_name = 'scene0000_00'
+    data_folder_path = 'dataset/scannet/scannet_train_detection_data/'
+    scene_path = os.path.join(data_folder_path, scene_name)
+
+    mesh_vertices = np.load(scene_path + '_vert.npy')
+    instance_labels = np.load(scene_path + '_ins_label.npy')
+    semantic_labels = np.load(scene_path + '_sem_label.npy')
+    instance_bboxes = np.load(scene_path + '_bbox.npy')
+
+    point_cloud = mesh_vertices[:, :3]
+    features = np.empty()
+
+    if USE_HEIGHT:
+        floor_height = np.percentile(point_cloud[:, 2], 0.99)  # Find the floor height along the z-axis/gravity direction
+        height = np.expand_dims(point_cloud[:, 2] - floor_height)
+        features = height
+
+    # ------------------------------- LABELS ------------------------------
+    target_bboxes = np.zeros((MAX_NUM_OBJ, 6))
+    target_bboxes_mask = np.zeros((MAX_NUM_OBJ))
+    angle_classes = np.zeros((MAX_NUM_OBJ,))
+    angle_residuals = np.zeros((MAX_NUM_OBJ,))
+    size_classes = np.zeros((MAX_NUM_OBJ,))
+    size_residuals = np.zeros((MAX_NUM_OBJ, 3))
+
+    point_cloud, choices = random_sampling(point_cloud, num_points, return_choices=True)
+    instance_labels = instance_labels[choices]
+    semantic_labels = semantic_labels[choices]
+
+    features = features[choices]
+
+    target_bboxes_mask[0:instance_bboxes.shape[0]] = 1
+    target_bboxes[0:instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
+
+    # ------------------------------- DATA AUGMENTATION ------------------------------
+    if AUGMENT:
+        if np.random.random() > 0.5:
+            # Flipping along the YZ plane
+            point_cloud[:, 0] = -1 * point_cloud[:, 0]
+            target_bboxes[:, 0] = -1 * target_bboxes[:, 0]
+
+        if np.random.random() > 0.5:
+            # Flipping along the XZ plane
+            point_cloud[:, 1] = -1 * point_cloud[:, 1]
+            target_bboxes[:, 1] = -1 * target_bboxes[:, 1]
+
+            # Rotation along up-axis/Z-axis
+        rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
+        rot_mat = rotz(rot_angle)
+        point_cloud = np.dot(point_cloud, np.transpose(rot_mat))
+        target_bboxes = rotate_aligned_boxes(target_bboxes, rot_mat)
+
+        # compute votes *AFTER* augmentation
+        # generate votes
+        # Note: since there's no map between bbox instance labels and
+        # pc instance_labels (it had been filtered
+        # in the data preparation step) we'll compute the instance bbox
+        # from the points sharing the same instance label.
+        point_votes = np.zeros([num_points, 3])
+        point_votes_mask = np.zeros(num_points)
+        for i_instance in np.unique(instance_labels):
+            # find all points belong to that instance
+            ind = np.where(instance_labels == i_instance)[0]
+            # find the semantic label
+            if semantic_labels[ind[0]] in nyu40ids:
+                x = point_cloud[ind, :]
+                center = 0.5 * (x.min(0) + x.max(0))
+                point_votes[ind, :] = center - x
+                point_votes_mask[ind] = 1.0
+        point_votes = np.tile(point_votes, (1, 3))  # make 3 votes identical
+
+        class_ind = [np.where(nyu40ids == x)[0][0] for x in instance_bboxes[:, -1]]
+        # NOTE: set size class as semantic class. Consider use size2class.
+        size_classes[0:instance_bboxes.shape[0]] = class_ind
+        size_residuals[0:instance_bboxes.shape[0], :] = \
+            target_bboxes[0:instance_bboxes.shape[0], 3:6] - mean_size_arr[class_ind, :]
+
+        # ret_dict = {}
+        point_cloud = point_cloud.astype(np.float32)
+        center_label = target_bboxes.astype(np.float32)[:, 0:3]
+        heading_class_label = angle_classes.astype(np.int64)
+        heading_residual_label = angle_residuals.astype(np.float32)
+        size_class_label = size_classes.astype(np.int64)
+        size_residual_label = size_residuals.astype(np.float32)
+        target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
+        target_bboxes_semcls[0:instance_bboxes.shape[0]] = \
+            [nyu40id2class[x] for x in instance_bboxes[:, -1][0:instance_bboxes.shape[0]]]
+        sem_cls_label = target_bboxes_semcls.astype(np.int64)
+        box_label_mask = target_bboxes_mask.astype(np.float32)
+        vote_label = point_votes.astype(np.float32)
+        vote_label_mask = point_votes_mask.astype(np.int64)
+
+
+    # 2. Build the model
+
+    # 3. Compare the loss result
+
+    # 4. Spot what fuck is wrong
+
+    pass
+
+def rotz(t):
+    """Rotation about the z-axis."""
+    c = np.cos(t)
+    s = np.sin(t)
+    return np.array([[c, -s,  0],
+                     [s,  c,  0],
+                     [0,  0,  1]])
+
+
 def get_cards():
     num = 0
     cards = os.environ.get('CUDA_VISIBLE_DEVICES', '')
