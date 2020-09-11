@@ -12,7 +12,7 @@
 #See the License for the specific language governing permissions and
 #limitations under the License.
 """
-Contains functions of the loss computation.
+Contains functions of the AP computation.
 """
 
 from __future__ import absolute_import

@@ -26,7 +26,7 @@ import paddle.fluid.layers as layers
 import paddle.fluid.framework as framework
 import paddle.fluid.layers.learning_rate_scheduler as lr_scheduler
 
-from models import *
+from models.votenet import *
 from data.scannet_reader import ScannetDetectionReader
 from utils import *
 from models.ap_helper import APCalculator, parse_groundtruths, parse_predictions
@@ -443,120 +443,149 @@ def train():
     #     print("kpis\ttrain_seg_%s_loss_card%s\t%f" % (args.model, card_num, _loss))
 
 def test_train():
-    # Params list
-    USE_HEIGHT = True
-    AUGMENT = False
-    MAX_NUM_OBJ = 64
+    import h5py
+    # 1. Read the scene data
+    SCENE_DATA = 'data/scene0000_00_test.h5'
 
-    # 1. Prepare the same input data
-    scene_name = 'scene0000_00'
-    data_folder_path = 'dataset/scannet/scannet_train_detection_data/'
-    scene_path = os.path.join(data_folder_path, scene_name)
+    with h5py.File(SCENE_DATA, 'r') as f:
+        point_cloud = f.get('point_cloud').value
+        features = f.get('features').value
+        center_label = f.get('center_label').value
+        heading_class_label = f.get('heading_class_label').value
+        heading_residual_label = f.get('heading_residual_label').value
+        size_class_label = f.get('size_class_label').value
+        size_residual_label = f.get('size_residual_label').value
+        sem_cls_label = f.get('sem_cls_label').value
+        box_label_mask = f.get('box_label_mask').value
+        vote_label = f.get('vote_label').value
+        vote_label_mask = f.get('vote_label_mask').value
 
-    mesh_vertices = np.load(scene_path + '_vert.npy')
-    instance_labels = np.load(scene_path + '_ins_label.npy')
-    semantic_labels = np.load(scene_path + '_sem_label.npy')
-    instance_bboxes = np.load(scene_path + '_bbox.npy')
-
-    point_cloud = mesh_vertices[:, :3]
-    features = np.empty()
-
-    if USE_HEIGHT:
-        floor_height = np.percentile(point_cloud[:, 2], 0.99)  # Find the floor height along the z-axis/gravity direction
-        height = np.expand_dims(point_cloud[:, 2] - floor_height)
-        features = height
-
-    # ------------------------------- LABELS ------------------------------
-    target_bboxes = np.zeros((MAX_NUM_OBJ, 6))
-    target_bboxes_mask = np.zeros((MAX_NUM_OBJ))
-    angle_classes = np.zeros((MAX_NUM_OBJ,))
-    angle_residuals = np.zeros((MAX_NUM_OBJ,))
-    size_classes = np.zeros((MAX_NUM_OBJ,))
-    size_residuals = np.zeros((MAX_NUM_OBJ, 3))
-
-    point_cloud, choices = random_sampling(point_cloud, num_points, return_choices=True)
-    instance_labels = instance_labels[choices]
-    semantic_labels = semantic_labels[choices]
-
-    features = features[choices]
-
-    target_bboxes_mask[0:instance_bboxes.shape[0]] = 1
-    target_bboxes[0:instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
-
-    # ------------------------------- DATA AUGMENTATION ------------------------------
-    if AUGMENT:
-        if np.random.random() > 0.5:
-            # Flipping along the YZ plane
-            point_cloud[:, 0] = -1 * point_cloud[:, 0]
-            target_bboxes[:, 0] = -1 * target_bboxes[:, 0]
-
-        if np.random.random() > 0.5:
-            # Flipping along the XZ plane
-            point_cloud[:, 1] = -1 * point_cloud[:, 1]
-            target_bboxes[:, 1] = -1 * target_bboxes[:, 1]
-
-            # Rotation along up-axis/Z-axis
-        rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
-        rot_mat = rotz(rot_angle)
-        point_cloud = np.dot(point_cloud, np.transpose(rot_mat))
-        target_bboxes = rotate_aligned_boxes(target_bboxes, rot_mat)
-
-        # compute votes *AFTER* augmentation
-        # generate votes
-        # Note: since there's no map between bbox instance labels and
-        # pc instance_labels (it had been filtered
-        # in the data preparation step) we'll compute the instance bbox
-        # from the points sharing the same instance label.
-        point_votes = np.zeros([num_points, 3])
-        point_votes_mask = np.zeros(num_points)
-        for i_instance in np.unique(instance_labels):
-            # find all points belong to that instance
-            ind = np.where(instance_labels == i_instance)[0]
-            # find the semantic label
-            if semantic_labels[ind[0]] in nyu40ids:
-                x = point_cloud[ind, :]
-                center = 0.5 * (x.min(0) + x.max(0))
-                point_votes[ind, :] = center - x
-                point_votes_mask[ind] = 1.0
-        point_votes = np.tile(point_votes, (1, 3))  # make 3 votes identical
-
-        class_ind = [np.where(nyu40ids == x)[0][0] for x in instance_bboxes[:, -1]]
-        # NOTE: set size class as semantic class. Consider use size2class.
-        size_classes[0:instance_bboxes.shape[0]] = class_ind
-        size_residuals[0:instance_bboxes.shape[0], :] = \
-            target_bboxes[0:instance_bboxes.shape[0], 3:6] - mean_size_arr[class_ind, :]
-
-        # ret_dict = {}
-        point_cloud = point_cloud.astype(np.float32)
-        center_label = target_bboxes.astype(np.float32)[:, 0:3]
-        heading_class_label = angle_classes.astype(np.int64)
-        heading_residual_label = angle_residuals.astype(np.float32)
-        size_class_label = size_classes.astype(np.int64)
-        size_residual_label = size_residuals.astype(np.float32)
-        target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
-        target_bboxes_semcls[0:instance_bboxes.shape[0]] = \
-            [nyu40id2class[x] for x in instance_bboxes[:, -1][0:instance_bboxes.shape[0]]]
-        sem_cls_label = target_bboxes_semcls.astype(np.int64)
-        box_label_mask = target_bboxes_mask.astype(np.float32)
-        vote_label = point_votes.astype(np.float32)
-        vote_label_mask = point_votes_mask.astype(np.int64)
-
+        f.close()
 
     # 2. Build the model
+    det_batch_size = 1
+    use_color = False
+    use_height = True
+    det_num_classes = 18
+    det_num_points = 20000
+    num_heading_bin = 1
+    num_size_cluster = 18
+    num_target = 256
+    vote_factor = 1
+    cluster_sampling = 'seed_fps'
+    use_gpu = True
+    det_weight_h5 = 'votenet_weight.h5'
 
-    # 3. Compare the loss result
+    # ==== Build detection model ====
 
-    # 4. Spot what fuck is wrong
+    # Used for AP calculation
+    DATASET_CONFIG = ScannetDatasetConfig()
 
-    pass
+    CONFIG_DICT = {
+        'remove_empty_box': False,
+        'use_3d_nms': True,
+        'nms_iou': 0.06,
+        'use_old_type_nms': False,
+        'cls_nms': True,
+        'use_custom_nms': True,
+        'per_class_proposal': True,
+        'conf_thresh': 0.65,
+        'batch_size': det_batch_size,
+        'dataset_config': DATASET_CONFIG
+    }
 
-def rotz(t):
-    """Rotation about the z-axis."""
-    c = np.cos(t)
-    s = np.sin(t)
-    return np.array([[c, -s,  0],
-                     [s,  c,  0],
-                     [0,  0,  1]])
+    logger.info('==== Start building Votenet inference model ====')
+
+    startup = fluid.Program()
+    infer_prog = fluid.Program()
+
+    INPUT_FEATURE_DIM = int(use_color) * 3 + int(use_height) * 1
+
+    with fluid.program_guard(infer_prog, startup):
+        with fluid.unique_name.guard():
+            infer_model = VoteNet(
+                num_class=det_num_classes,
+                num_points=det_num_points,
+                num_heading_bin=num_heading_bin,
+                num_size_cluster=num_size_cluster,
+                num_proposal=num_target,
+                input_feature_dim=INPUT_FEATURE_DIM,
+                vote_factor=vote_factor,
+                sampling=cluster_sampling,
+                batch_size=det_batch_size,
+                bn_momentum=0.9
+            )
+
+            infer_model.build_input('train')
+            infer_outputs = infer_model.build('train')
+
+    logger.info('==== Model built ====')
+
+    infer_prog = infer_prog.clone(True)
+    infer_keys, infer_values = parse_outputs(infer_outputs)
+
+    place = fluid.CUDAPlace(0) if use_gpu else fluid.CPUPlace()
+    exe = fluid.Executor(place)
+    exe.run(startup)
+
+    build_strategy = fluid.BuildStrategy()
+    build_strategy.memory_optimize = False
+    build_strategy.enable_inplace = False
+    build_strategy.fuse_all_optimizer_ops = False
+
+    infer_compile_prog = fluid.compiler.CompiledProgram(infer_prog)
+
+    logger.info('==== Load weight params from {} ===='.format(det_weight_h5))
+
+    weight_dict = {}
+    with h5py.File(det_weight_h5, 'r') as f:
+        for key in f.keys():
+            weight_dict[key] = np.array(f[key], dtype=np.float32)
+        f.close()
+
+    for block in infer_prog.blocks:
+        for param in block.all_parameters():
+            if param.name not in weight_dict:
+                logger.info('Warning: {} is not in weight dict!'.format(param.name))
+                continue
+
+            pd_var = fluid.global_scope().find_var(param.name)
+            pd_param = pd_var.get_tensor()
+            if param.shape == weight_dict[param.name].shape:
+                pd_param.set(weight_dict[param.name], place)
+            else:
+                pd_param.set(np.expand_dims(weight_dict[param.name], -1), place)
+
+    logger.info('==== Weight restored ====')
+
+    # ==== Inference ====
+    logger.info('==== Inferening ====')
+    feed_input = {}
+    feed_input['xyz'] = point_cloud
+    feed_input['feature'] = features
+    feed_input['center_label'] = center_label
+    feed_input['heading_class_label'] = heading_class_label
+    feed_input['heading_residual_label'] = heading_residual_label
+    feed_input['size_class_label'] = size_class_label
+    feed_input['size_residual_label'] = size_residual_label
+    feed_input['sem_cls_label'] = sem_cls_label
+    feed_input['box_label_mask'] = box_label_mask
+    feed_input['vote_label'] = vote_label
+    feed_input['vote_label_mask'] = vote_label_mask
+
+    tic = time.time()
+    infer_outs = exe.run(program=infer_compile_prog,
+                         feed=feed_input,
+                         fetch_list=infer_values)
+
+    toc = time.time()
+    logger.info('Inference time: %f' % (toc - tic))
+    end_points = dict(zip(infer_keys, infer_outs))
+
+    pred_map_cls = parse_predictions(end_points, CONFIG_DICT)
+    logger.info('Finished detection. %d object detected.' % (len(pred_map_cls[0])))
+
+    # 3. Compare the loss result. Spot what fuck is wrong
 
 
 def get_cards():
@@ -567,4 +596,5 @@ def get_cards():
     return num
 
 if __name__ == '__main__':
-    train()
+    # train()
+    test_train()

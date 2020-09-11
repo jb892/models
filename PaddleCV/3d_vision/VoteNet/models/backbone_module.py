@@ -19,15 +19,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import sys
-import os
+import paddle.fluid.layers as layers
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
-sys.path.append(ROOT_DIR)
-sys.path.append(os.path.join(ROOT_DIR, 'pointnet2'))
-
-from pointnet2_modules import PointnetSAModuleVotes, PointnetFPModule
+from .pointnet2_utils import PointnetSAModuleVotes, PointnetFPModule
 
 __all__ = ['Pointnet2Backbone']
 
@@ -51,6 +45,8 @@ class Pointnet2Backbone(object):
                 XXX_features: float32 Tensor of shape (B,K,D)
                 XXX-inds: int64 Tensor of shape (B,K) values in [0,N-1]
         """
+        if features is not None:
+            features = layers.transpose(features, perm=[0, 2, 1])
 
         # --------- 4 SET ABSTRACTION LAYERS ---------
         l1_xyz, l1_feature, l1_inds = PointnetSAModuleVotes(

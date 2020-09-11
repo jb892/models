@@ -23,8 +23,9 @@ import os
 import numpy as np
 import paddle.fluid as fluid
 import paddle.fluid.layers as layers
+
 from utils import conv1d
-from pointnet2_modules import PointnetSAModuleVotes, farthest_point_sampling
+from .pointnet2_utils import PointnetSAModuleVotes
 from ext_op import *
 
 __all__ = ['ProposalModule']
@@ -43,8 +44,9 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
     :param batch_size:
     :return:
     """
+    net = layers.transpose(net, perm=[0, 2, 1])
 
-    # num_proposal should be 1024
+    # num_proposal should be 256
     num_proposal = net.shape[1]
 
     objectness_scores = net[:, :, 0:2]
@@ -53,8 +55,6 @@ def decode_scores(net, end_points, num_class, num_heading_bin, num_size_cluster,
     base_xyz = end_points['aggregated_vote_xyz']  # (batch_size, num_proposal, 3)
     center = base_xyz + net[:, :, 2:5]  # (batch_size, num_proposal, 3)
     end_points['center'] = center
-
-    # logger.info('center.shape = ', center.shape)
 
     heading_scores = net[:, :, 5:5 + num_heading_bin]
     heading_residuals_normalized = net[:, :, 5 + num_heading_bin:5 + num_heading_bin * 2]
@@ -101,12 +101,11 @@ class ProposalModule(object):
         Returns:
             scores: (B,num_proposal,2+3+NH*2+NS*4)
         """
-        features_t = layers.transpose(features, perm=[0, 2, 1])
         if self.sampling == 'vote_fps':
             # Farthest point sampling (FPS) on votes
             xyz, features, fps_inds = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features_t,
+                features=features,
                 npoint=self.num_proposal,
                 radius=0.3,
                 nsample=16,
@@ -123,7 +122,7 @@ class ProposalModule(object):
             sample_inds = farthest_point_sampling(end_points['seed_xyz'], self.num_proposal)
             xyz, features, _ = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features_t,
+                features=features,
                 inds=sample_inds,
                 npoint=self.num_proposal,
                 radius=0.3,
@@ -141,7 +140,7 @@ class ProposalModule(object):
             sample_inds = fluid.layers.randint(0, num_seed, shape=(batch_size, self.num_proposal), dtype='int32')
             xyz, features, _ = PointnetSAModuleVotes(
                 xyz=xyz,
-                features=features_t,
+                features=features,
                 inds=sample_inds,
                 npoint=self.num_proposal,
                 radius=0.3,
@@ -157,13 +156,13 @@ class ProposalModule(object):
             exit()
         end_points['aggregated_vote_xyz'] = xyz # (batch_size, num_proposal, 3)
         end_points['aggregated_vote_inds'] = sample_inds # (batch_size, num_proposal,) # should be 0,1,2,...,num_proposal
+        end_points['aggregated_vote_features'] = features
 
-        # Convert tensor from 'NWC' to 'NCW' format
-        features = layers.transpose(features, perm=[0, 2, 1])
+
         # --------- PROPOSAL GENERATION ---------
-        net = conv1d(input=features, num_filters=128, filter_size=1, bn=True, act='relu',
+        net = conv1d(input=features, num_filters=128, filter_size=1, bn=True,
                      conv_name=self.name+'.conv1', bn_name=self.name+'.bn1', bn_momentum=self.bn_momentum)
-        net = conv1d(input=net, num_filters=128, filter_size=1, bn=True, act='relu',
+        net = conv1d(input=net, num_filters=128, filter_size=1, bn=True,
                      conv_name=self.name+'.conv2', bn_name=self.name+'.bn2', bn_momentum=self.bn_momentum)
         net = conv1d(input=net,
                      num_filters=2+3+self.num_heading_bin*2+self.num_size_cluster*4+self.num_class,
@@ -172,9 +171,7 @@ class ProposalModule(object):
                      act=None,
                      conv_name=self.name+'.conv3',
                      bn_momentum=self.bn_momentum) #(batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
-
-        # Convert tensor from 'NCW' to 'NWC' format
-        net = layers.transpose(net, perm=[0, 2, 1])
+        end_points['pnet_conv1d'] = net
 
         end_points = decode_scores(net, end_points, self.num_class, self.num_heading_bin, self.num_size_cluster,
                                    mean_size_arr, batch_size)

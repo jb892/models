@@ -28,6 +28,7 @@ from plyfile import PlyData, PlyElement
 # Mesh IO
 import trimesh
 import matplotlib.pyplot as pyplot
+import h5py
 
 import paddle.fluid as fluid
 import paddle.fluid.framework as framework
@@ -659,12 +660,148 @@ def _term_reader(signum, frame):
 signal.signal(signal.SIGINT, _term_reader)
 signal.signal(signal.SIGTERM, _term_reader)
 
+def export_votenet_test_scene(scene_name, export_name):
+    # Params list
+    USE_HEIGHT = True
+    AUGMENT = False
+    MAX_NUM_OBJ = 64
+    num_points = 20000
+
+    # 1. Prepare the same input data
+    data_folder_path = '../dataset/scannet/scannet_train_detection_data/'
+    scene_path = os.path.join(data_folder_path, scene_name)
+    mean_size_arr = np.load('../' + MEAN_SIZE_ARR_PATH)['arr_0']
+
+    mesh_vertices = np.load(scene_path + '_vert.npy')
+    instance_labels = np.load(scene_path + '_ins_label.npy')
+    semantic_labels = np.load(scene_path + '_sem_label.npy')
+    instance_bboxes = np.load(scene_path + '_bbox.npy')
+
+    point_cloud = mesh_vertices[:, :3]
+    features = None
+
+    if USE_HEIGHT:
+        floor_height = np.percentile(point_cloud[:, 2],
+                                     0.99)  # Find the floor height along the z-axis/gravity direction
+        height = np.expand_dims(point_cloud[:, 2] - floor_height, axis=-1)
+        features = height
+
+    # ------------------------------- LABELS ------------------------------
+    target_bboxes = np.zeros((MAX_NUM_OBJ, 6))
+    target_bboxes_mask = np.zeros((MAX_NUM_OBJ))
+    angle_classes = np.zeros((MAX_NUM_OBJ,))
+    angle_residuals = np.zeros((MAX_NUM_OBJ,))
+    size_classes = np.zeros((MAX_NUM_OBJ,))
+    size_residuals = np.zeros((MAX_NUM_OBJ, 3))
+
+    point_cloud, choices = random_sampling(point_cloud, num_points, return_choices=True)
+    instance_labels = instance_labels[choices]
+    semantic_labels = semantic_labels[choices]
+
+    features = features[choices]
+
+    target_bboxes_mask[0:instance_bboxes.shape[0]] = 1
+    target_bboxes[0:instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
+
+    # ------------------------------- DATA AUGMENTATION ------------------------------
+    if AUGMENT:
+        if np.random.random() > 0.5:
+            # Flipping along the YZ plane
+            point_cloud[:, 0] = -1 * point_cloud[:, 0]
+            target_bboxes[:, 0] = -1 * target_bboxes[:, 0]
+
+        if np.random.random() > 0.5:
+            # Flipping along the XZ plane
+            point_cloud[:, 1] = -1 * point_cloud[:, 1]
+            target_bboxes[:, 1] = -1 * target_bboxes[:, 1]
+
+            # Rotation along up-axis/Z-axis
+        rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
+        rot_mat = rotz(rot_angle)
+        point_cloud = np.dot(point_cloud, np.transpose(rot_mat))
+        target_bboxes = rotate_aligned_boxes(target_bboxes, rot_mat)
+
+    # compute votes *AFTER* augmentation
+    # generate votes
+    # Note: since there's no map between bbox instance labels and
+    # pc instance_labels (it had been filtered
+    # in the data preparation step) we'll compute the instance bbox
+    # from the points sharing the same instance label.
+    point_votes = np.zeros([num_points, 3])
+    point_votes_mask = np.zeros(num_points)
+    for i_instance in np.unique(instance_labels):
+        # find all points belong to that instance
+        ind = np.where(instance_labels == i_instance)[0]
+        # find the semantic label
+        if semantic_labels[ind[0]] in nyu40ids:
+            x = point_cloud[ind, :]
+            center = 0.5 * (x.min(0) + x.max(0))
+            point_votes[ind, :] = center - x
+            point_votes_mask[ind] = 1.0
+    point_votes = np.tile(point_votes, (1, 3))  # make 3 votes identical
+
+    class_ind = [np.where(nyu40ids == x)[0][0] for x in instance_bboxes[:, -1]]
+    # NOTE: set size class as semantic class. Consider use size2class.
+    size_classes[0:instance_bboxes.shape[0]] = class_ind
+    size_residuals[0:instance_bboxes.shape[0], :] = \
+        target_bboxes[0:instance_bboxes.shape[0], 3:6] - mean_size_arr[class_ind, :]
+
+    # ret_dict = {}
+    point_cloud = point_cloud.astype(np.float32)
+    center_label = target_bboxes.astype(np.float32)[:, 0:3]
+    heading_class_label = angle_classes.astype(np.int64)
+    heading_residual_label = angle_residuals.astype(np.float32)
+    size_class_label = size_classes.astype(np.int64)
+    size_residual_label = size_residuals.astype(np.float32)
+    target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
+    target_bboxes_semcls[0:instance_bboxes.shape[0]] = \
+        [nyu40id2class[x] for x in instance_bboxes[:, -1][0:instance_bboxes.shape[0]]]
+    sem_cls_label = target_bboxes_semcls.astype(np.int64)
+    box_label_mask = target_bboxes_mask.astype(np.float32)
+    vote_label = point_votes.astype(np.float32)
+    vote_label_mask = point_votes_mask.astype(np.int64)
+
+    with h5py.File(export_name, 'w') as f:
+        f.create_dataset('point_cloud', data=point_cloud)
+        f.create_dataset('features', data=features)
+        f.create_dataset('center_label', data=center_label)
+        f.create_dataset('heading_class_label', data=heading_class_label)
+        f.create_dataset('heading_residual_label', data=heading_residual_label)
+        f.create_dataset('size_class_label', data=size_class_label)
+        f.create_dataset('size_residual_label', data=size_residual_label)
+        f.create_dataset('sem_cls_label', data=sem_cls_label)
+        f.create_dataset('box_label_mask', data=box_label_mask)
+        f.create_dataset('vote_label', data=vote_label)
+        f.create_dataset('vote_label_mask', data=vote_label_mask)
+        f.close()
+
+def test_read_scene():
+    scene_name = 'scene0000_00_test.h5'
+    with h5py.File(scene_name, 'r') as f:
+        point_cloud = f.get('point_cloud').value
+        features = f.get('features').value
+        center_label = f.get('center_label').value
+        heading_class_label = f.get('heading_class_label').value
+        heading_residual_label = f.get('heading_residual_label').value
+        size_class_label = f.get('size_class_label').value
+        size_residual_label = f.get('size_residual_label').value
+        sem_cls_label = f.get('sem_cls_label').value
+        box_label_mask = f.get('box_label_mask').value
+        vote_label = f.get('vote_label').value
+        vote_label_mask = f.get('vote_label_mask').value
+
+        f.close()
+
 if __name__ == '__main__':
     # export_eval_whole_scene(16, 8192)
     # r = ScannetReader('/home/jake/Documents/paddle/pointnet2_paddle/data', 'train')
     # m_r = r.get_reader(8, 8192)
 
     # test_pickle_and_save_npy()
-    reader = ScannetDetectionReader()
+    # reader = ScannetDetectionReader()
 
-    pass
+    scene_name = 'scene0000_00'
+    export_name = 'scene0000_00_test.h5'
+    export_votenet_test_scene(scene_name, export_name)
+
+

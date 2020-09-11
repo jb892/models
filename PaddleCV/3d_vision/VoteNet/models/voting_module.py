@@ -19,7 +19,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import paddle.fluid as fluid
 import paddle.fluid.layers as layers
 from utils import conv1d
 
@@ -78,57 +77,5 @@ class VotingModule(object):
         vote_features = layers.reshape(vote_features, shape=[batch_size, num_vote, self.out_dim])
         vote_features = layers.transpose(vote_features, perm=[0, 2, 1])
         # vote_features.shape = [B, out_dim, num_vote]
-
-        # print('vote_features.shape = ', vote_features.shape)
-        # if end_points is not None:class VotingModule(object):
-    def __init__(self, vote_factor, seed_feature_dim):
-        """ Votes generation from seed point features.
-
-        Args:
-            vote_facotr: int
-                number of votes generated from each seed point
-            seed_feature_dim: int
-                number of channels of seed point features
-            vote_feature_dim: int
-                number of channels of vote features
-        """
-        self.vote_factor = vote_factor
-        self.in_dim = seed_feature_dim
-        self.out_dim = self.in_dim  # due to residual feature, in_dim has to be == out_dim
-
-    def build(self, seed_xyz, seed_features):
-        """
-        Arguments:
-            seed_xyz: (batch_size, num_seed, 3) Pytorch tensor
-            seed_features: (batch_size, feature_dim, num_seed) Pytorch tensor
-        Returns:
-            vote_xyz: (batch_size, num_seed*vote_factor, 3)
-            vote_features: (batch_size, vote_feature_dim, num_seed*vote_factor)
-        """
-        batch_size = seed_xyz.shape()[0]
-        num_seed = seed_xyz.shape()[1]
-        num_vote = num_seed * self.vote_factor
-
-        net = conv1d(seed_features, self.out_dim, filter_size=1)
-        net = conv1d(net, self.out_dim, filter_size=1)
-        net = conv1d(net,
-                     num_filters=(3+self.out_dim)*self.vote_factor,
-                     filter_size=1,
-                     bn=False,
-                     act=None)  # (batch_size, (3+out_dim)*vote_factor, num_seed)
-
-        net = fluid.layers.transpose(net, perm=[0, 2, 1])
-        net = fluid.layers.reshape(net, shape=[batch_size, num_seed, self.vote_factor, 3+self.out_dim])
-        offset = net[:, :, :, 0:3]
-        vote_xyz = fluid.layers.unsqueeze(seed_xyz, 2) + offset
-        vote_xyz = fluid.layers.reshape(vote_xyz, shape=[batch_size, num_vote, 3])
-
-        residual_features = net[:, :, :, 3:] # (batch_size, num_seed, vote_factor, out_dim)
-        vote_features = fluid.layers.unsqueeze(fluid.layers.transpose(seed_features, perm=[0, 2, 1]), 2) + residual_features
-        vote_features = fluid.layers.reshape(vote_features, shape=[batch_size, num_vote, self.out_dim])
-        vote_features = fluid.layers.transpose(vote_features, perm=[0, 2, 1])
-
-        return vote_xyz, vote_features
-        #     end_points['voting_features'] = vote_features
 
         return vote_xyz, vote_features

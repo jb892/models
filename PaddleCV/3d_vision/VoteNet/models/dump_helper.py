@@ -77,6 +77,8 @@ def dump_results(end_points, dump_dir, config, inference_switch=False):
             #     fout.write('\n')
             # fout.close()
             cur_sem_cls_labels = end_points['batch_pred_map_cls'][i]
+        else:
+            cur_sem_cls_labels = None
 
         # Dump predicted bounding boxes
         if np.sum(objectness_prob>DUMP_CONF_THRESH)>0:
